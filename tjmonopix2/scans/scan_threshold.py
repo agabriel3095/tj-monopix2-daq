@@ -50,34 +50,6 @@ scan_configuration = {
 class ThresholdScan(ScanBase):
     scan_id = 'threshold_scan'
 
-    # def load_regs_config(self, chip, fe, json_path="../chip_registers.json"):
-    #     """
-    #     Loads and applies the values of the registers from JSON, selecting chip and front-end.
-    #     """
-    #     with open(json_path, "r") as f:
-    #         data = json.load(f)
-
-    #     try:
-    #         config = data[chip][fe]
-    #     except KeyError:
-    #         self.log.warning(f"Config for chip={chip}, fe={fe} not found in {json_path}. Uses previous values")
-    #         return
-
-    #     reg_upd = False
-    #     for reg, value in config.items():
-    #         if reg in self.chip.registers:
-    #             self.chip.registers[reg].write(value)
-    #             reg_upd = True
-
-    #         else:
-    #             self.log.warning(f"Register {reg} not found in chip. Uses previous values.")
-    #     if reg_upd:
-    #         self.log.info(f"Registers value updated according to {json_path}")
-
-
-    # def get_config_param(self, key, default=None):
-    #     return self.configuration.get("configure", {}).get(key,default)
-
     def _configure(self, start_column=0, stop_column=512, start_row=0, stop_row=512, **_):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True

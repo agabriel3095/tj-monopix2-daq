@@ -11,7 +11,7 @@ from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
 
-import yaml
+import yaml, json, argparse
 
 
 scan_configuration = {
@@ -47,7 +47,6 @@ scan_configuration = {
     # 'VCAL_LOW_step': -1
 }
 
-
 class ThresholdScan(ScanBase):
     scan_id = 'threshold_scan'
 
@@ -55,6 +54,14 @@ class ThresholdScan(ScanBase):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['hitor'][start_column:stop_column, start_row:stop_row] = True
+
+        def_regs = self.get_config_param("def_regs")
+        regs_json = self.get_config_param("regs_json", "../chip_registers.json")
+        chip = self.get_config_param("chip")
+        fe = self.get_config_param("fe")
+        if def_regs:
+            self.load_regs_config(json_path=regs_json, chip=chip, fe=fe)
+
 
         # # Read masked pixels from masked_pixels.yaml
         # with open("output_data/module_0/chip_0/masked_pixels.yaml") as f:
@@ -166,137 +173,6 @@ class ThresholdScan(ScanBase):
         self.chip.registers["SEL_PULSE_EXT_CONF"].write(0)
         self.chip.registers["CMOS_TX_EN_CONF"].write(1)
 
-        # # W8R06 irradiated HVC used TB2024 run 1566 TH=15.9 @30C and W8R04
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(30) #def 30
-        # self.chip.registers["ICASN"].write(30) #def 30
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(50)
-        # self.chip.registers["VCASP"].write(40)
-        # self.chip.registers["VCASC"].write(140)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # #  # # W8R13 not irradiate
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(2)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(110) # TB 143 but this chip with VRESET at 110 doens't work well
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # # # W8R06 irradiated DCC used TB2024 run 1484 THR=30.6 DAC and W8R4
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(10)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # # # W2R17 irradiated 2.5e14 DCC
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(20)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-
-
-        # #W8R06 irradiated DCC used
-        # self.chip.registers["ITHR"].write(64)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(143)  #VRESET=50 for HVC 143 for DCC
-        # self.chip.registers["ICASN"].write(20)
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(255)
-        # self.chip.registers["IDEL"].write(255)
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205) #by mistake was 255 in the THR scan for ITUNE in W8R13
-        # self.chip.registers["VCLIP"].write(255)
-
-
-        # #W14R12 DCC used for ITUNE calib in W8R06 parameters 20241007_134946_threshold_scan_interpreted
-        # self.chip.registers["ITHR"].write(64)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(50)  #VRESET=50 for HVC
-        # self.chip.registers["ICASN"].write(80)
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(255)
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205) #by mistake was 255 in the THR scan for ITUNE in W8R13
-        # self.chip.registers["VCLIP"].write(255)
-
-        # #W14R12 DCC TB23 default parameters
-        # self.chip.registers["ITHR"].write(60)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(110)
-        # self.chip.registers["ICASN"].write(2)
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(190)
-        # self.chip.registers["IDEL"].write(255)
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(228)
-        # self.chip.registers["VCLIP"].write(255)
-
-
-        # #W8R13 HVC and DCC PISA default parameters change VRESET=50 or 110
-        # self.chip.registers["ITHR"].write(64)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(110)shift
-        # self.chip.registers["ITUNE"].write(139)
-        # self.chip.registers["IDEL"].write(255)
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(255)
-        # self.chip.registers["VCLIP"].write(255)
-
-
-        # #W8R06 DCC p-irradiatd after DESY 2024
-        # self.chip.registers["ITHR"].write(64)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(143)
-        # self.chip.registers["ICASN"].write(20)
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(80)
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-
-
-        # #W8R06 HVC p-irradiatd after DESY 2024
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(30)
-        # self.chip.registers["ICASN"].write(15)
-        # self.chip.registers["IDB"].write(150)
-        # self.chip.registers["ITUNE"].write(200)
-        # self.chip.registers["ICOMP"].write(80)
-        # self.chip.registers["IDEL"].write(88)
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(50)
-        # self.chip.registers["VCASP"].write(40)
-        # self.chip.registers["VCASC"].write(140)
-        # self.chip.registers["VCLIP"].write(255)
-
         self.chip.registers["FREEZE_START_CONF"].write(250)
         self.chip.registers["READ_START_CONF"].write(253)
         self.chip.registers["READ_STOP_CONF"].write(255)
@@ -363,5 +239,24 @@ class ThresholdScan(ScanBase):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--def_regs", help="Force the use of default registers", action="store_true")
+    parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
+    parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
+    parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--h5_config_file", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.h5_config_file:
+        scan_configuration["chip_config_file"] = args.h5_config_file
+
     with ThresholdScan(scan_config=scan_configuration) as scan:
+        if args.def_regs:
+            scan.configuration.setdefault("configure", {})
+            scan.configuration["configure"].update({
+                "def_regs": args.def_regs,
+                "regs_json": args.regs_json,
+                "chip": args.chip,
+                "fe": args.fe
+            })
         scan.start()

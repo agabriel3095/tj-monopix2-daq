@@ -21,6 +21,7 @@ from threading import Lock
 import numpy as np
 import tables as tb
 import yaml
+import json
 import zmq
 from online_monitor.utils import utils as ou
 
@@ -709,6 +710,39 @@ class ScanBase(object):
                 chip_conf['use_pixel'] = {}
         return chip_conf
 
+    def load_regs_config(self, chip, fe, json_path="../chip_registers.json"):
+        """
+        Loads and applies the values of the registers from JSON, selecting chip and front-end.
+        """
+        with open(json_path, "r") as f:
+            data = json.load(f)
+
+        try:
+            config = data[chip][fe]
+        except KeyError:
+            self.log.warning(f"Config for chip={chip}, fe={fe} not found in {json_path}. Uses previous values")
+            return
+
+        reg_upd = False
+        for reg, value in config.items():
+            if reg in self.chip.registers:
+                self.chip.registers[reg].write(value)
+                reg_upd = True
+
+            else:
+                self.log.warning(f"Register {reg} not found in chip. Uses previous values.")
+        if reg_upd:
+            self.log.info(f"Registers value updated according to {json_path}")
+
+
+    def get_config_param(self, key, default=None):
+        """
+        Extracts the arguments from self.configuration['configure'] (taken from argparse)
+        """
+        return self.configuration.get("configure", {}).get(key,default)
+
+
+
     def _create_chip_container(self, scan_config, scan_config_per_chip):
         ''' Extract the chip and scan configurations from mulitple sources
 
@@ -746,6 +780,9 @@ class ScanBase(object):
                     # Set chip config file name
                     with self._logging_through_handlers():
                         chip_settings = v
+                        override_cfg = scan_configuration.get("chip_config_file")
+                        if override_cfg:
+                            chip_settings["chip_config_file"] = override_cfg
                         if not chip_settings['chip_config_file']:  # take chip cfg from latest scan
                             chip_settings['chip_config_file'] = utils.get_latest_config_node_from_files(directory=output_dir)
                             if not chip_settings['chip_config_file']:  # fallback to yaml

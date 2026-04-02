@@ -11,7 +11,7 @@ from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
 
-import yaml
+import yaml, json, argparse
 
 
 scan_configuration = {
@@ -47,14 +47,49 @@ scan_configuration = {
     # 'VCAL_LOW_step': -1
 }
 
-
 class ThresholdScan(ScanBase):
     scan_id = 'threshold_scan'
+
+    # def load_regs_config(self, chip, fe, json_path="../chip_registers.json"):
+    #     """
+    #     Loads and applies the values of the registers from JSON, selecting chip and front-end.
+    #     """
+    #     with open(json_path, "r") as f:
+    #         data = json.load(f)
+
+    #     try:
+    #         config = data[chip][fe]
+    #     except KeyError:
+    #         self.log.warning(f"Config for chip={chip}, fe={fe} not found in {json_path}. Uses previous values")
+    #         return
+
+    #     reg_upd = False
+    #     for reg, value in config.items():
+    #         if reg in self.chip.registers:
+    #             self.chip.registers[reg].write(value)
+    #             reg_upd = True
+
+    #         else:
+    #             self.log.warning(f"Register {reg} not found in chip. Uses previous values.")
+    #     if reg_upd:
+    #         self.log.info(f"Registers value updated according to {json_path}")
+
+
+    # def get_config_param(self, key, default=None):
+    #     return self.configuration.get("configure", {}).get(key,default)
 
     def _configure(self, start_column=0, stop_column=512, start_row=0, stop_row=512, **_):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['hitor'][start_column:stop_column, start_row:stop_row] = True
+
+        def_regs = self.get_config_param("def_regs")
+        regs_json = self.get_config_param("regs_json", "../chip_registers.json")
+        chip = self.get_config_param("chip")
+        fe = self.get_config_param("fe")
+        if def_regs:
+            self.load_regs_config(json_path=regs_json, chip=chip, fe=fe)
+
 
         # # Read masked pixels from masked_pixels.yaml
         # with open("output_data/module_0/chip_0/masked_pixels.yaml") as f:
@@ -166,7 +201,6 @@ class ThresholdScan(ScanBase):
         self.chip.registers["SEL_PULSE_EXT_CONF"].write(0)
         self.chip.registers["CMOS_TX_EN_CONF"].write(1)
 
-
         self.chip.registers["FREEZE_START_CONF"].write(250)
         self.chip.registers["READ_START_CONF"].write(253)
         self.chip.registers["READ_STOP_CONF"].write(255)
@@ -231,5 +265,24 @@ class ThresholdScan(ScanBase):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--def_regs", help="Force the use of default registers", action="store_true")
+    parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
+    parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
+    parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--h5_config_file", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.h5_config_file:
+        scan_configuration["chip_config_file"] = args.h5_config_file
+
     with ThresholdScan(scan_config=scan_configuration) as scan:
+        if args.def_regs:
+            scan.configuration.setdefault("configure", {})
+            scan.configuration["configure"].update({
+                "def_regs": args.def_regs,
+                "regs_json": args.regs_json,
+                "chip": args.chip,
+                "fe": args.fe
+            })
         scan.start()

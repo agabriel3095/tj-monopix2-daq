@@ -40,6 +40,10 @@ TDC:
   EN_INVERT_TDC: 0 # Inverting TDC input
   EN_INVERT_TRIGGER: 0 # Inverting trigger input, e.g. for using Test output from EUDET TLU
 
+rx_channels:
+  rx0:
+    DATA_DELAY: 14 # Receiver data delay applied once during hardware initialization for all scans
+
 hardware: # Setup-specific hardware settings
   enable_NTC: False # Only enable if you know you have the correct resistors mounted on the BDAQ board!
 

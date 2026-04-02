@@ -13,6 +13,7 @@
 from tqdm import tqdm
 import numpy as np
 
+from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
 from tjmonopix2.scans.shift_and_inject import shift_and_inject, get_scan_loop_mask_steps
 from tjmonopix2.analysis import online as oa
@@ -81,7 +82,7 @@ class TDACTuning(ScanBase):
         # Disable readout for double-columns of col_disabled and those outside start_column:stop_column
         col_disabled = col_bad
         col_disabled += list(range(0, start_column & 0xfffe))
-        col_disabled += list(range(stop_column + 1, 512))
+        col_disabled += list(range((stop_column + 1) & 0xfffe, 512))
         reg_values = [0xffff] * 16
         for col in col_disabled:
             dcol = col // 2
@@ -177,8 +178,6 @@ class TDACTuning(ScanBase):
 
         self.chip.registers["SEL_PULSE_EXT_CONF"].write(0)
 
-        self.daq.rx_channels['rx0']['DATA_DELAY'] = 14
-
         self.data.hist_occ = oa.OccupancyHistogramming()
 
     def _scan(self, start_column=0, stop_column=512, start_row=0, stop_row=512, n_injections=100, **_):
@@ -265,7 +264,12 @@ class TDACTuning(ScanBase):
         self.data.hist_occ.add(raw_data)
 
     def _analyze(self):
-        pass
+        with analysis.Analysis(raw_data_file=self.output_filename + '.h5', **self.configuration['bench']['analysis']) as a:
+            a.analyze_data()
+
+        if self.configuration['bench']['analysis']['create_pdf']:
+            with plotting.Plotting(analyzed_data_file=a.analyzed_data_file) as p:
+                p.create_tuning_plots(include_tdac=True)
 
 
 if __name__ == '__main__':

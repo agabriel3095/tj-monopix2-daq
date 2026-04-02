@@ -119,7 +119,7 @@ class Plotting(object):
             self.HistTdcStatus = None
         self.HistOcc = root.HistOcc[:]
         self.HistTot = root.HistTot[:]
-        if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot', 'fast_threshold_scan', 'global_threshold_tuning', 'in_time_threshold_scan', 'autorange_threshold_scan', 'crosstalk_scan']:
+        if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot', 'fast_threshold_scan', 'in_time_threshold_scan', 'autorange_threshold_scan', 'crosstalk_scan']:
             self.ThresholdMap = root.ThresholdMap[:, :]
             self.Chi2Map = root.Chi2Map[:, :]
             self.Chi2Sel = (self.Chi2Map > 0) & (self.Chi2Map < SCURVE_CHI2_UPPER_LIMIT) & (~self.enable_mask)
@@ -145,9 +145,15 @@ class Plotting(object):
 
         try:
             conversion_factors = au.ConfigDict(root.configuration_in.bench.electron_conversion[:])
-            if self.scan_config['start_column'] in range(0, 448) and self.scan_config['stop_column'] in range(0, 448):  # TODO: Get rid of hardcoded values.
+            start_column = self.scan_config['start_column']
+            stop_column_exclusive = self.scan_config['stop_column']
+            stop_column_inclusive = stop_column_exclusive - 1
+            if stop_column_inclusive < start_column:
+                stop_column_inclusive = start_column
+
+            if start_column < 448 and stop_column_inclusive < 448:  # TODO: Get rid of hardcoded values.
                 self.electron_conversion = conversion_factors['DC_coupled']
-            elif self.scan_config['start_column'] in range(448, 512) and self.scan_config['stop_column'] in range(448, 512):
+            elif start_column >= 448 and stop_column_inclusive < 512:
                 self.electron_conversion = conversion_factors['AC_coupled']
             else:
                 self.log.warning('Both DC and AC coupled pixels enabled. Choose ambiguous electron conversion factor of DC falvors!')
@@ -243,6 +249,21 @@ class Plotting(object):
             self._plot_parameter_page()
         except Exception:
             self.log.error('Could not create parameter page!')
+
+    def create_tuning_plots(self, include_tdac=True):
+        if self.skip_plotting:
+            return
+        self.log.info('Creating tuning plots...')
+        self.create_parameter_page()
+        if self._monitoring_enabled_in_pdf():
+            self.create_monitoring_summary_table()
+            self.create_monitoring_main_page()
+        self.create_occupancy_map()
+        self.create_hit_pix_plot()
+        if include_tdac:
+            self.create_tdac_plot()
+            self.create_tdac_map()
+        self.create_tot_plot()
 
     def _monitoring_enabled_in_pdf(self):
         if not self.monitoring_group:
@@ -899,8 +920,9 @@ class Plotting(object):
 
         ticks = f(ax.get_xticks())
         ax2.xaxis.set_major_locator(matplotlib.ticker.FixedLocator(ticks))
+        ax2.set_xticks(ticks)
         ax2.set_xlabel('Electrons', labelpad=7)
-
+        ax2.set_xticklabels(xticks)
         return ax2
 
     def _plot_parameter_page(self):

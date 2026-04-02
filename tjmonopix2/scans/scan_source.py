@@ -72,7 +72,7 @@ class SourceScan(ScanBase):
         # Disable readout for double-columns of col_disabled and those outside start_column:stop_column
         col_disabled = col_bad
         col_disabled += list(range(0, start_column & 0xfffe))
-        col_disabled += list(range(stop_column + 1, 512))
+        col_disabled += list(range((stop_column + 1) & 0xfffe, 512))
         reg_values = [0xffff] * 16
         for col in col_disabled:
             dcol = col // 2

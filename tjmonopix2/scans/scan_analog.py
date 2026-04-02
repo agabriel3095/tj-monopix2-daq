@@ -40,7 +40,7 @@ class AnalogScan(ScanBase):
         # Disable readout for double-columns of col_disabled and those outside start_column:stop_column
         col_disabled = col_bad
         col_disabled += list(range(0, start_column & 0xfffe))
-        col_disabled += list(range(stop_column + 1, 512))
+        col_disabled += list(range((stop_column + 1) & 0xfffe, 512))
         reg_values = [0xffff] * 16
         for col in col_disabled:
             dcol = col // 2
@@ -84,8 +84,6 @@ class AnalogScan(ScanBase):
         # self.chip.registers["FREEZE_STOP_CONF"].write(271)
         # self.chip.registers["STOP_CONF"].write(271)
 
-
-        self.daq.rx_channels['rx0']['DATA_DELAY'] = 14
 
     def _scan(self, n_injections=100, **_):
         pbar = tqdm(total=get_scan_loop_mask_steps(self.chip), unit='Mask steps')

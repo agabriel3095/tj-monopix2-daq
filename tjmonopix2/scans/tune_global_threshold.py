@@ -12,6 +12,7 @@
 import numpy as np
 from tqdm import tqdm
 
+from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
 from tjmonopix2.scans.shift_and_inject import shift_and_inject
 from tjmonopix2.analysis import online as oa
@@ -72,8 +73,6 @@ class GDACTuning(ScanBase):
         self.chip.registers["SEL_PULSE_EXT_CONF"].write(0)
 
         self.data.hist_occ = oa.OccupancyHistogramming()
-        
-        self.daq.rx_channels['rx0']['DATA_DELAY'] = 14
 
     def _scan(self, n_injections=100, gdac_value_bits=range(6, -1, -1), **_):
         '''
@@ -177,7 +176,12 @@ class GDACTuning(ScanBase):
         self.data.hist_occ.add(raw_data)
 
     def _analyze(self):
-        pass
+        with analysis.Analysis(raw_data_file=self.output_filename + '.h5', **self.configuration['bench']['analysis']) as a:
+            a.analyze_data()
+
+        if self.configuration['bench']['analysis']['create_pdf']:
+            with plotting.Plotting(analyzed_data_file=a.analyzed_data_file) as p:
+                p.create_tuning_plots(include_tdac=True)
 
 
 if __name__ == '__main__':

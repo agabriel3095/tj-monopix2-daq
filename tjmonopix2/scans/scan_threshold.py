@@ -118,7 +118,7 @@ class ThresholdScan(ScanBase):
         # Disable readout for double-columns of col_disabled and those outside start_column:stop_column
         col_disabled = list(col_bad)
         col_disabled += list(range(0, start_column & 0xfffe))
-        col_disabled += list(range(stop_column + 1, 512))
+        col_disabled += list(range((stop_column + 1) & 0xfffe, 512))
         reg_values = [0xffff] * 16
         for col in col_disabled:
             dcol = col // 2
@@ -205,8 +205,6 @@ class ThresholdScan(ScanBase):
         # # configuration to overwrite ITUNE
         # self.chip.registers["MON_EN_ITUNE"].write(0)
         # self.chip.registers["OVR_EN_ITUNE"].write(1) # 1 se voglio abilitare OVRITUNE
-
-        self.daq.rx_channels['rx0']['DATA_DELAY'] = 14
 
     def _scan(self, n_injections=100, VCAL_HIGH=80, VCAL_LOW_start=80, VCAL_LOW_stop=40, VCAL_LOW_step=-1, **_):
         """

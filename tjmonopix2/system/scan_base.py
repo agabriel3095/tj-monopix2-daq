@@ -568,6 +568,7 @@ class ScanBase(object):
         if not self.hardware_initialized or force:
             with self._logging_through_handlers():  # TODO: log power supply logs for chips of same module only
                 self.daq.init()
+                self._configure_rx_channels()
                 self.log.info('Initializing chips...')
 
             # Reset CMD state mashine, creates glitch that requires often a new PLL lock and AURORA sync
@@ -605,6 +606,16 @@ class ScanBase(object):
         else:
             with self._logging_through_handlers():
                 self.log.info('Hardware already initialized, skip initialization!')
+
+    def _configure_rx_channels(self):
+        rx_config = self.configuration['bench'].get('rx_channels', {})
+        for receiver, settings in rx_config.items():
+            if receiver not in self.daq.rx_channels:
+                self.log.warning("Receiver '%s' configured in testbench, but not present in DAQ", receiver)
+                continue
+            for register, value in settings.items():
+                self.daq.rx_channels[receiver][register] = value
+                self.log.info("Set %s.%s = %s from testbench config", receiver, register, value)
 
     def _set_chip_handles(self, chip):
         ''' Add the chip properties that are kept in the chip container
@@ -1025,9 +1036,12 @@ class ScanBase(object):
 
         scan_par_table = h5_file.create_table(h5_file.root.configuration_out.scan, name='scan_params', title='Scan parameter values per scan parameter id', description=np.dtype(fields))
         for par_id, par_values in self.scan_parameters.items():
-            a = np.full(shape=(1,), fill_value=np.NaN).astype(np.dtype(fields))
+            a = np.zeros(shape=(1,), dtype=np.dtype(fields))
+            a['scan_param_id'] = par_id
+            for name, dtype in fields[1:]:
+                if np.issubdtype(dtype, np.floating):
+                    a[name] = np.nan
             for key, val in par_values.items():
-                a['scan_param_id'] = par_id
                 a[key] = np.float32(val)
             scan_par_table.append(a)
 

@@ -30,7 +30,7 @@ scan_configuration = {
 
     # Target threshold
     'VCAL_LOW': 30,
-    'VCAL_HIGH': 30+24
+    'VCAL_HIGH': 30+29
 }
 
 

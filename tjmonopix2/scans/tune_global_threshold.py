@@ -19,15 +19,17 @@ from tjmonopix2.analysis import online as oa
 
 
 scan_configuration = {
-    'start_column': 370,
-    'stop_column': 374,
+    # 'start_column': 370,
+    # 'stop_column': 374,
+    'start_column': 288,
+    'stop_column': 290,
     'start_row': 0,
     'stop_row': 512,
 
     'n_injections': 100,
 
     # Target threshold
-    'VCAL_LOW': 140-30,
+    'VCAL_LOW': 140-18,
     'VCAL_HIGH': 140,
 
     # This setting does not have to be changed, it only allows (slightly) faster retuning
@@ -62,10 +64,39 @@ class GDACTuning(ScanBase):
         self.data.start_column, self.data.stop_column, self.data.start_row, self.data.stop_row = start_column, stop_column, start_row, stop_row
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True
-        # self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 0b100
+        self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 0b100
 
+        # chip w8r13 bad cols
+        #Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+
+
+        # Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][450,68] = False
+        self.chip.masks['enable'][288,316] = False
+        self.chip.masks['enable'][163,219] = False
+        self.chip.masks['enable'][427,259] = False
+        self.chip.masks['enable'][219,161] = False # disab20230620_153108_threshold_scanle hottest pixel on chip
+        self.chip.masks['enable'][214,88] = False
+        self.chip.masks['enable'][215,101] = False
+        self.chip.masks['enable'][450,463] = False
+        self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
+
+        # rest of logic
         self.chip.masks.apply_disable_mask()
         self.chip.masks.update(force=True)
+    
 
         self.chip.registers["VL"].write(VCAL_LOW)
         self.chip.registers["VH"].write(VCAL_HIGH)

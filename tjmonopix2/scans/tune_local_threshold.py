@@ -21,8 +21,13 @@ from tjmonopix2.analysis import online as oa
 import yaml
 
 scan_configuration = {
-    'start_column': 360,
-    'stop_column': 448,
+    # full DC frontend
+    'start_column': 288,
+    'stop_column': 290,
+    # 'start_column': 224,
+    # 'stop_column': 448,
+    # 'start_column': 360,
+    # 'stop_column': 448,
     'start_row': 0,
     'stop_row': 512,
 
@@ -30,7 +35,8 @@ scan_configuration = {
 
     # Target threshold
     'VCAL_LOW': 30,
-    'VCAL_HIGH': 30+29
+    # 'VCAL_HIGH': 30+29
+    'VCAL_HIGH': 30+18
 }
 
 
@@ -70,6 +76,34 @@ class TDACTuning(ScanBase):
         #     col = masked_pixels['masked_pixels'][i]['col']
         #     self.chip.masks.disable_mask[col, row] = False
         #     # self.chip.masks['tdac'][col, row] = 0 # --> Max solution to disable the pixel BUT not store in use_pixel NOR in masks.enable
+
+        # For TJ-MP2 training 13 Apr 26
+        # chip w8r13 bad cols
+        #Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+
+
+        # Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][450,68] = False
+        self.chip.masks['enable'][288,316] = False
+        self.chip.masks['enable'][163,219] = False
+        self.chip.masks['enable'][427,259] = False
+        self.chip.masks['enable'][219,161] = False # disab20230620_153108_threshold_scanle hottest pixel on chip
+        self.chip.masks['enable'][214,88] = False
+        self.chip.masks['enable'][215,101] = False
+        self.chip.masks['enable'][450,463] = False
+        self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
 
         col_bad = [] #
         # W8R6 bad columns (246 to 251 included: double-cols will be disabled)

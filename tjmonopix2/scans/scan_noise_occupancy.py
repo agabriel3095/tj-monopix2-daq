@@ -14,10 +14,10 @@ from tqdm import tqdm
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
 
-import yaml
+import yaml, json, argparse
 
 scan_configuration = {
-    'start_column': 360,
+    'start_column': 380,
     'stop_column': 448,
     'start_row': 0,
     'stop_row': 512,
@@ -36,22 +36,31 @@ class NoiseOccScan(ScanBase):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][:, :] = False
 
-        # # Read masked pixels from masked_pixels.yaml
-        # with open("output_data/module_0/chip_0/masked_pixels.yaml") as f:
-        #     masked_pixels = yaml.full_load(f)
+        #Feature to call the defaukt registers for chip and FE, saved on a json file. 
+        # ATTENTION!! all hardcoded wite.registers MUST go below these lines
+        def_regs = self.get_config_param("def_regs")
+        regs_json = self.get_config_param("regs_json", "../chip_registers.json")
+        chip = self.get_config_param("chip")
+        fe = self.get_config_param("fe")
+        if def_regs:
+            self.load_regs_config(json_path=regs_json, chip=chip, fe=fe)
 
-        # for i in range(0, len(masked_pixels['masked_pixels'])):
-        #     row = masked_pixels['masked_pixels'][i]['row']
-        #     col = masked_pixels['masked_pixels'][i]['col']
-        #     self.chip.masks.disable_mask[col, row] = False
-        #     # self.chip.masks['tdac'][col, row] = 0 # --> Max solution to disable the pixel BUT not store in use_pixel NOR in masks.enable
+        # Read masked pixels from masked_pixels.yaml
+        # with open("output_data/module_0/chip_0/masked_pixels.yaml") as f:
+        #    masked_pixels = yaml.full_load(f)
+#
+        #for i in range(0, len(masked_pixels['masked_pixels'])):
+        #    row = masked_pixels['masked_pixels'][i]['row']
+        #    col = masked_pixels['masked_pixels'][i]['col']
+        #    self.chip.masks.disable_mask[col, row] = False
+        #    # self.chip.masks['tdac'][col, row] = 0 # --> Max solution to disable the pixel BUT not store in use_pixel NOR in masks.enable
 
 
         col_bad = []
         # W8R6 bad columns (246 to 251 included: double-cols will be disabled)
         col_bad += [248]
         # col_bad += [436]
-        # # W8R13 pixels that fire even when disabled
+        # W8R13 pixels that fire even when disabled
         # col_bad += list(range(383,415)) # chip w8r13
         # col_bad += list(range(0,40)) # chip w8r13
         # col_bad += list(range(448,512)) # HV col disabled
@@ -82,36 +91,12 @@ class NoiseOccScan(ScanBase):
             # Read back
             # print(f"{i:3d} {v:016b} {self.chip._get_register_value(155+i):016b} {self.chip._get_register_value(171+i):016b} {self.chip._get_register_value(187+i):016b} {self.chip._get_register_value(203+i):016b}")
 
-
+        # self.chip.registers["ITHR"].write(40)
 
         self.chip.masks.apply_disable_mask()
         self.chip.masks.update(force=True)
 
-        # # # # W8R06 irradiated HVC used TB2024 run 1566 TH=15.9 @30C and also W8R04
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(30) #def 30
-        # self.chip.registers["ICASN"].write(30) #def 30
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(50)
-        # self.chip.registers["VCASP"].write(40)
-        # self.chip.registers["VCASC"].write(140)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # # W8R06 irradiated DCC used TB2024 run 1484 THR=30.6 DAC  and also W8R04
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(10)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
+       
 
         # # # configuration to monitor ITUNE
         # self.chip.registers["MON_EN_ITUNE"].write(1)
@@ -176,5 +161,26 @@ class NoiseOccScan(ScanBase):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--def_regs", help="Force the use of default registers", action="store_true")
+    parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
+    parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
+    parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--h5_config_file", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.h5_config_file:
+        scan_configuration["chip_config_file"] = args.h5_config_file
+
     with NoiseOccScan(scan_config=scan_configuration) as scan:
+        if args.def_regs:
+            scan.configuration.setdefault("configure", {})
+            scan.configuration["configure"].update({
+                "def_regs": args.def_regs,
+                "regs_json": args.regs_json,
+                "chip": args.chip,# chip w8r13
+        # col_bad += list(range(0,40)) # chip w8r13
+        # col_bad += list(range(448,512)) # 
+                "fe": args.fe
+            })
         scan.start()

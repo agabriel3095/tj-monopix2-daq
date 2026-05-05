@@ -534,7 +534,7 @@ def main(input_file, overwrite=False, no_fit=False):
         plt.axes((0.125, 0.11, 0.775, 0.72))
         # plt.pcolormesh(occupancy_edges[0], occupancy_edges[1], threshold_DAC.transpose(), vmin=round(th_mean.n-2*th_mean.s), vmax=round(th_mean.n+2*th_mean.s),
                     #    rasterized=True)  # Necessary for quick save and view in PDF
-        plt.pcolormesh(occupancy_edges[0], occupancy_edges[1], threshold_DAC.transpose(), vmin=26, vmax=28,
+        plt.pcolormesh(occupancy_edges[0], occupancy_edges[1], threshold_DAC.transpose(), vmin=18, vmax=24,
                        rasterized=True)  # Necessary for quick save and view in PDF
         plt.title(subtitle)
         plt.suptitle("Threshold map")

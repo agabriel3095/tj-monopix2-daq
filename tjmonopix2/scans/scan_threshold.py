@@ -24,27 +24,27 @@ scan_configuration = {
     'VCAL_HIGH': 140,
     'VCAL_LOW_start': 140-0,
     # 'VCAL_LOW_stop': 140-20,
-    'VCAL_LOW_stop': 140-141,
+    'VCAL_LOW_stop': 140-140,
     'VCAL_LOW_step': -1
 
 
-    # # # if enabled injection in all rows at the same time to measure both ANAMON0 and ANAMON1
-    # 'start_column': 288,
-    # 'stop_column': 290,
-    # 'start_row': 508,
-    # 'stop_row': 512,
+    # # # # if enabled injection in all rows at the same time to measure both ANAMON0 and ANAMON1
+    #  'start_column': 290,
+    #  'stop_column': 292,
+    #  'start_row': 508,
+    #  'stop_row': 512,
 
-    # 'n_injections': 1,
-    # 'VCAL_HIGH': 140,
-    # 'VCAL_LOW_start': 140-40,
-    # 'VCAL_LOW_stop': 140-141,
-    # 'VCAL_LOW_step': -20
+    #  'n_injections': 1,
+    #  'VCAL_HIGH': 140,
+    #  'VCAL_LOW_start': 140-0,
+    #  'VCAL_LOW_stop': 140-141,
+    #  'VCAL_LOW_step': -10
 
-    # 'n_injections': 100,
-    # 'VCAL_HIGH': 140,
-    # 'VCAL_LOW_start': 140-0,
-    # 'VCAL_LOW_stop': 140-140,
-    # 'VCAL_LOW_step': -1
+     #'n_injections': 100,
+     #'VCAL_HIGH': 140,
+     #'VCAL_LOW_start': 140-0,
+     #'VCAL_LOW_step': -1
+     #'VCAL_LOW_stop': 140-140,
 }
 
 class ThresholdScan(ScanBase):
@@ -55,6 +55,8 @@ class ThresholdScan(ScanBase):
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['hitor'][start_column:stop_column, start_row:stop_row] = True
 
+        #Feature to call the defaukt registers for chip and FE, saved on a json file. 
+        # ATTENTION!! all hardcoded wite.registers MUST go below these lines
         def_regs = self.get_config_param("def_regs")
         regs_json = self.get_config_param("regs_json", "../chip_registers.json")
         chip = self.get_config_param("chip")
@@ -76,7 +78,7 @@ class ThresholdScan(ScanBase):
         # # TDAC=4 for threshold tuning 0b100
         # self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 4# TDAC=4 (default)
 
-        #chip w8r13 bad cols
+        # chip w8r13 bad cols
         # #Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
         # self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
         # self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
@@ -101,7 +103,7 @@ class ThresholdScan(ScanBase):
         # self.chip.masks['enable'][214,88] = False
         # self.chip.masks['enable'][215,101] = False
         # self.chip.masks['enable'][450,463] = False
-        #self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
+        # self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
 
     # Noisy/hot W8R6 pixels AFTER IRRADIATION
         # for col, row in [(300, 138), (318, 318), (296, 333), (304, 246), (308, 322), (297, 485), (311, 260), (319, 382), (308, 508), (306, 58), (294, 488), (317, 395), (318, 308), (290, 257), (292, 133), (312, 279), (295, 419), (280, 76), (286, 31), (316, 17), (282, 374), (283, 284), (307, 185), (297, 92), (317, 137), (285, 411), (295, 378), (310, 98), (300, 7), (280, 69), (289, 299), (305, 177), (309, 479), (294, 479), (284, 173), (318, 339), (299, 230), (312, 111), (285, 288), (284, 111), (281, 197), (319, 360), (304, 301), (290, 42), (285, 122), (295, 396), (301, 373), (309, 396), (290, 183), (316, 94), (314, 152), (306, 383), (302, 417), (306, 323), (304, 440), (316, 502), (299, 103), (304, 137), (305, 195), (295, 71), (318, 494), (281, 202), (300, 249), (289, 216), (280, 97), (292, 45), (293, 88), (311, 154), (296, 498), (301, 304), (283, 437), (291, 347), (314, 345), (281, 231), (288, 316), (285, 239), (286, 216), (319, 509), (302, 432), (319, 427), (310, 449), (316, 253), (293, 190), (287, 481), (297, 276), (314, 466), (300, 132), (319, 319), (318, 505), (300, 200), (293, 124), (318, 322), (301, 179), (290, 320), (304, 442), (289, 91), (316, 138), (293, 270), (302, 257), (312, 385), (287, 159), (285, 484), (299, 474), (294, 270), (303, 278), (288, 412), (309, 399), (281, 80), (294, 288), (304, 482), (310, 8), (306, 95), (308, 79), (291, 316), (287, 498), (303, 332), (302, 348), (306, 256), (292, 61), (294, 184), (297, 95), (300, 263), (294, 241), (306, 127), (318, 40), (286, 315), (286, 504), (295, 481), (318, 218), (319, 486), (318, 174), (301, 336), (302, 217), (281, 353), (311, 498), (305, 420), (294, 87), (293, 165), (293, 349), (318, 304), (306, 222), (297, 32), (294, 171), (301, 118), (286, 441), (296, 274), (296, 184), (312, 198), (314, 502), (317, 355), (283, 215), (287, 76), (298, 120), (319, 60), (317, 44), (308, 163), (280, 469), (314, 15), (287, 410), (293, 414), (313, 443), (305, 410), (303, 159), (298, 196), (286, 257), (318, 228), (288, 24), (302, 57), (313, 38), (310, 67), (298, 44), (294, 90), (284, 70), (305, 339), (283, 164), (284, 463), (284, 114), (290, 225), (317, 402), (298, 253), (298, 392), (308, 198), (318, 177), (289, 360), (317, 491), (304, 228), (291, 245), (296, 170), (316, 432), (313, 321), (295, 491), (298, 470), (314, 247), (282, 153), (297, 59), (285, 262), (300, 257), (314, 490), (291, 115), (296, 465), (305, 19), (315, 424), (298, 486), (309, 476), (308, 177), (312, 287), (287, 510), (293, 496), (294, 214), (283, 134), (283, 402), (296, 212), (282, 314), (282, 313), (285, 374), (281, 366), (282, 310), (316, 143), (291, 372), (281, 320), (300, 337), (299, 231), (297, 73), (281, 330), (303, 424), (317, 370), (294, 89)]:
@@ -111,7 +113,7 @@ class ThresholdScan(ScanBase):
         # W8R6 bad columns (246 to 251 included: double-cols will be disabled)
         col_bad += [248]
 
-        # # W8R13 pixels that fire even when disabled
+        # W8R13 pixels that fire even when disabled
         # col_bad += list(range(383,415)) # chip w8r13
         # col_bad += list(range(0,40)) # chip w8r13
 
@@ -181,7 +183,7 @@ class ThresholdScan(ScanBase):
         self.chip.registers["STOP_CONF"].write(271)
 
 
-        # # # Enable analog monitoring pixel DC
+        # # Enable analog monitoring pixel DC
         # self.chip.registers["EN_PULSE_ANAMON_L"].write(1)
         # self.chip.registers["ANAMON_SFN_L"].write(0b0001)
         # self.chip.registers["ANAMON_SFP_L"].write(0b1000)
@@ -206,6 +208,8 @@ class ThresholdScan(ScanBase):
         # self.chip.registers["MON_EN_ITUNE"].write(0)
         # self.chip.registers["OVR_EN_ITUNE"].write(1) # 1 se voglio abilitare OVRITUNE
 
+        # self.chip.registers["ICASN"].write(25)
+
     def _scan(self, n_injections=100, VCAL_HIGH=80, VCAL_LOW_start=80, VCAL_LOW_stop=40, VCAL_LOW_step=-1, **_):
         """
         Injects charges from VCAL_LOW_START to VCAL_LOW_STOP in steps of VCAL_LOW_STEP while keeping VCAL_HIGH constant.
@@ -221,9 +225,9 @@ class ThresholdScan(ScanBase):
             self.store_scan_par_values(scan_param_id=scan_param_id, vcal_high=VCAL_HIGH, vcal_low=vcal_low)
             with self.readout(scan_param_id=scan_param_id):
                 #shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id)
-                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,PulseStartCnfg=19)
+                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,PulseStartCnfg=45)
                 # if we want to measure ANAMON0 and ANAMON1 at the same time, the following line inject in all rows at the same time
-                # self.chip.inject(PulseStartCnfg=19, PulseStopCnfg=19+900, repetitions=n_injections, wait_cycles=1, latency=1400)
+                #  self.chip.inject(PulseStartCnfg=19, PulseStopCnfg=19+900, repetitions=n_injections, wait_cycles=1, latency=1400)
         pbar.close()
         self.log.success('Scan finished')
 

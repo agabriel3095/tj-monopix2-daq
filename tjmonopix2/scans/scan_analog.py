@@ -11,9 +11,11 @@ from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
 
+import yaml, json, argparse
+
 scan_configuration = {
-    'start_column': 360,
-    'stop_column': 448,
+    'start_column': 288,
+    'stop_column': 290,
     'start_row': 0,
     'stop_row': 512,
 }
@@ -25,6 +27,18 @@ class AnalogScan(ScanBase):
     def _configure(self, start_column=0, stop_column=512, start_row=0, stop_row=512, **_):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
         self.chip.masks['injection'][start_column:stop_column, start_row:stop_row] = True
+
+
+        #Feature to call the defaukt registers for chip and FE, saved on a json file. 
+        # ATTENTION!! all hardcoded wite.registers MUST go below these lines
+        def_regs = self.get_config_param("def_regs")
+        regs_json = self.get_config_param("regs_json", "../chip_registers.json")
+        chip = self.get_config_param("chip")
+        fe = self.get_config_param("fe")
+        if def_regs:
+            self.load_regs_config(json_path=regs_json, chip=chip, fe=fe)
+
+
         # self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 0b100
         # self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 4# TDAC=4 (default)
         # self.chip.masks['hitor'][0, 0] = True
@@ -32,11 +46,11 @@ class AnalogScan(ScanBase):
         col_bad = []
         # W8R6 bad columns (246 to 251 included: double-cols will be disabled)
         col_bad += [248]
-        # col_bad += [436]
-        # # W8R13 pixels that fire even when disabled
-        # col_bad += list(range(383,415)) # chip w8r13
-        # col_bad += list(range(0,40)) # chip w8r13
-        # col_bad += list(range(448,512)) # HV col disabled
+        col_bad += [436]
+        # W8R13 pixels that fire even when disabled
+        col_bad += list(range(383,415)) # chip w8r13
+        col_bad += list(range(0,40)) # chip w8r13
+        col_bad += list(range(448,512)) # HV col disabled
         # Disable readout for double-columns of col_disabled and those outside start_column:stop_column
         col_disabled = col_bad
         col_disabled += list(range(0, start_column & 0xfffe))
@@ -64,7 +78,7 @@ class AnalogScan(ScanBase):
             # Read back
             # print(f"{i:3d} {v:016b} {self.chip._get_register_value(155+i):016b} {self.chip._get_register_value(171+i):016b} {self.chip._get_register_value(187+i):016b} {self.chip._get_register_value(203+i):016b}")
 
-
+        # self.chip.registers["ITHR"].write(45)
 
         self.chip.masks.apply_disable_mask()
         self.chip.masks.update(force=True)
@@ -102,6 +116,29 @@ class AnalogScan(ScanBase):
                 p.create_standard_plots()
 
 
+# if __name__ == "__main__":
+#     with AnalogScan(scan_config=scan_configuration) as scan:
+#         scan.start()
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--def_regs", help="Force the use of default registers", action="store_true")
+    parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
+    parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
+    parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--h5_config_file", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.h5_config_file:
+        scan_configuration["chip_config_file"] = args.h5_config_file
+
     with AnalogScan(scan_config=scan_configuration) as scan:
+        if args.def_regs:
+            scan.configuration.setdefault("configure", {})
+            scan.configuration["configure"].update({
+                "def_regs": args.def_regs,
+                "regs_json": args.regs_json,
+                "chip": args.chip,
+                "fe": args.fe
+            })
         scan.start()

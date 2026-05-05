@@ -9,18 +9,20 @@ import time
 import threading
 from tqdm import tqdm
 
-import yaml
+import yaml, json, argparse
 
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
 
 scan_configuration = {
-    'start_column': 449,
-    'stop_column': 480,
+    'start_column': 224,
+    'stop_column': 448,
+    # 'start_column': 288,
+    # 'stop_column': 290,    
     'start_row': 0,
     'stop_row': 512,
 
-    'scan_timeout': 60,    # Timeout for scan after which the scan will be stopped, in seconds; if False no limit on scan time
+    'scan_timeout': 300,    # Timeout for scan after which the scan will be stopped, in seconds; if False no limit on scan time
 
     'tot_calib_file': None#'output_data/module_0/chip_0/20240806_121701_threshold_scan_interpreted.h5'    # path to ToT calibration file for charge to e⁻ conversion, if None no conversion will be done
 
@@ -35,7 +37,17 @@ class SourceScan(ScanBase):
     def _configure(self, start_column=0, stop_column=512, start_row=0, stop_row=512, **_):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
 
- # TDAC=4 for threshold tuning 0b100
+        #Feature to call the defaukt registers for chip and FE, saved on a json file. 
+        # ATTENTION!! all hardcoded wite.registers MUST go below these lines
+        # Example  # self.chip.registers["ITHR"].write(50)
+        def_regs = self.get_config_param("def_regs")
+        regs_json = self.get_config_param("regs_json", "../chip_registers.json")
+        chip = self.get_config_param("chip")
+        fe = self.get_config_param("fe")
+        if def_regs:
+            self.load_regs_config(json_path=regs_json, chip=chip, fe=fe)
+
+        # TDAC=4 for threshold tuning 0b100
         # self.chip.masks['tdac'][start_column:stop_column, start_row:stop_row] = 4 # TDAC=4 (default)
 
         # Read masked pixels from masked_pixels.yaml
@@ -64,6 +76,34 @@ class SourceScan(ScanBase):
         # self.chip.masks['enable'][215,101] = False
         # self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
 
+        # For TJ-MP2 training 13 Apr 26
+        # chip w8r13 bad cols
+        #Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+
+
+        # Disable W8R13 bad/broken columns (25, 160, 161, 224, 274, 383-414 included, 447) and pixels
+        self.chip.masks['enable'][25,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][160:162,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][224,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][274,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][383:415,:] = False  # Wrong/random ToT
+        self.chip.masks['enable'][447,:] = False  # Many pixels don't fire
+        self.chip.masks['enable'][450,68] = False
+        self.chip.masks['enable'][288,316] = False
+        self.chip.masks['enable'][163,219] = False
+        self.chip.masks['enable'][427,259] = False
+        self.chip.masks['enable'][219,161] = False # disab20230620_153108_threshold_scanle hottest pixel on chip
+        self.chip.masks['enable'][214,88] = False
+        self.chip.masks['enable'][215,101] = False
+        self.chip.masks['enable'][450,463] = False
+        self.chip.masks['enable'][191:223,:] = False  # cols 191-223 are broken since Nov/dec very low THR
+
 
 
         col_bad = [] #
@@ -77,7 +117,7 @@ class SourceScan(ScanBase):
         for col in col_disabled:
             dcol = col // 2
             reg_values[dcol//16] &= ~(1 << (dcol % 16))
-        print(" ".join(f"{x:016b}" for x in reg_values))
+        # print(" ".join(f"{x:016b}" for x in reg_values))
         for i, v in enumerate(reg_values):
             # EN_RO_CONF
             self.chip._write_register(155+i, v)
@@ -94,104 +134,15 @@ class SourceScan(ScanBase):
             # EN_FREEZE_CONF
             self.chip._write_register(203+i, v)
             # Read back
-            print(f"{i:3d} {v:016b} {self.chip._get_register_value(155+i):016b} {self.chip._get_register_value(171+i):016b} {self.chip._get_register_value(187+i):016b} {self.chip._get_register_value(203+i):016b}")
+            # print(f"{i:3d} {v:016b} {self.chip._get_register_value(155+i):016b} {self.chip._get_register_value(171+i):016b} {self.chip._get_register_value(187+i):016b} {self.chip._get_register_value(203+i):016b}")
 
-
-
+        # self.chip.registers["ITHR"].write(50)
 
 
         self.chip.masks.apply_disable_mask()
         self.chip.masks.update()
 
-        # W8R06 irradiated HVC used TB2024 run 1566 TH=15.9 @30C
-        self.chip.registers["IBIAS"].write(100)
-        self.chip.registers["ITHR"].write(30) #def 30
-        self.chip.registers["ICASN"].write(30) #def 30
-        self.chip.registers["IDB"].write(100)
-        self.chip.registers["ITUNE"].write(250)
-        self.chip.registers["IDEL"].write(88)
-        self.chip.registers["IRAM"].write(50)
-        self.chip.registers["VRESET"].write(50)
-        self.chip.registers["VCASP"].write(40)
-        self.chip.registers["VCASC"].write(140)
-        self.chip.registers["VCLIP"].write(255)
-
-        # # # W8R06 irradiated DCC used TB2024 run 1484 THR=30.6 DAC
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(20)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # # W2R17 irradiated 2.5e14 DCC
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(20)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-
-        # # # W8R06 irradiated DCC used TB2024 run 1484 THR=30.6 DAC
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(64)  # TB ITHR=64
-        # self.chip.registers["ICASN"].write(20)  # TB ICASN=20
-        # self.chip.registers["IDB"].write(100)  # TB IDB=100
-        # self.chip.registers["ITUNE"].write(250)
-        # self.chip.registers["IDEL"].write(88)  #prebvious lab test data with 88
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(143) # TB 143
-        # self.chip.registers["VCASP"].write(93)
-        # self.chip.registers["VCASC"].write(205)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # #W8R06 irradiated HVC used TB2024 run 1566 TH=15.9
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["ITHR"].write(30)
-        # self.chip.registers["ICASN"].write(30)
-        # self.chip.registers["IDB"].write(100)
-        # self.chip.registers["ITUNE"].write(200)
-        # self.chip.registers["IDEL"].write(88)
-        # self.chip.registers["IRAM"].write(50)
-        # self.chip.registers["VRESET"].write(50)
-        # self.chip.registers["VCASP"].write(40)
-        # self.chip.registers["VCASC"].write(140)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # #W8R06 HVC p-irradiatd after DESY 2024
-        # self.chip.registers["ITHR"].write(30)
-        # self.chip.registers["IBIAS"].write(100)
-        # self.chip.registers["VRESET"].write(50)
-        # self.chip.registers["ICASN"].write(15)
-        # self.chip.registers["IDB"].write(150)
-        # self.chip.registers["ITUNE"].write(200)
-        # self.chip.registers["IDEL"].write(88)
-        # self.chip.registers["VCASP"].write(40)
-        # self.chip.registers["VCASC"].write(140)
-        # self.chip.registers["VCLIP"].write(255)
-
-        # W8R06 p-irradiatd after DESY 2024 TB settigns as in run 1566 with pwell = -0.%V and HV up to 30 V
-    #  'ITHR':30,  # Default 64
-    #  'IBIAS': 100,  # Default 50
-    #  'VRESET': 50,  # Default TB 143, 110 for lower THR, Lars dec proposal 128
-    #  'ICASN': 30,  # Lars proposed 54
-    #  'VCASP': 40,  # Default 93
-    #  "VCASC": 140,  # Lars proposed 150
-    #  "IDB": 100,  # Default 100
-    #  'ITUNE': 200,  # Default TB 53, 150 for lower THR tuning
-    #  'VCLIP': 255,  # Default 255
-    #  'IDEL':88, #def for dev branch
+        
 
 
     def _scan(self, scan_timeout=10, **_):
@@ -238,7 +189,25 @@ class SourceScan(ScanBase):
             with plotting.Plotting(analyzed_data_file=a.analyzed_data_file) as p:
                 p.create_standard_plots()
 
-
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--def_regs", help="Force the use of default registers", action="store_true")
+    parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
+    parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
+    parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--h5_config_file", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.h5_config_file:
+        scan_configuration["chip_config_file"] = args.h5_config_file
+
     with SourceScan(scan_config=scan_configuration) as scan:
+        if args.def_regs:
+            scan.configuration.setdefault("configure", {})
+            scan.configuration["configure"].update({
+                "def_regs": args.def_regs,
+                "regs_json": args.regs_json,
+                "chip": args.chip,
+                "fe": args.fe
+            })
         scan.start()

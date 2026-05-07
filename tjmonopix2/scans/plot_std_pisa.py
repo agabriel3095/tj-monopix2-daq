@@ -37,7 +37,10 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
         print("Processing", input_file)
         with tb.open_file(input_file) as f:
             cfg.append(get_config_dict(f))
-            tdac.append(f.root.configuration_out.chip.masks.tdac[:])
+            try:
+                tdac.append(f.root.configuration_in.chip.masks.tdac[:])
+            except tb.NoSuchNodeError:
+                tdac.append(f.root.configuration_out.chip.masks.tdac[:])
 
             try:
                 n_hits = f.root.Dut.shape[0]

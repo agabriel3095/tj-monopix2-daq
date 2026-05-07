@@ -49,7 +49,8 @@ def get_config_dict(h5_file):
                     except Exception:
                         pass  # print("Could not read node", node._v_pathname)
         except tb.NoSuchNodeError:
-            print("WARNING Input file does not have", cfg_path, "(incomplete acquisition?)")
+            if cfg_path == 'configuration_in':
+                print("WARNING Input file does not have", cfg_path, "(incomplete acquisition?)")
         except Exception:
             print("WARNING Could not read", cfg_path, "from input file (incomplete acquisition?)")
     return res
@@ -108,7 +109,7 @@ def draw_summary(input_file_path, cfg):
             f"Chip =  {cfg.get('configuration_in.chip.settings.chip_sn')}\n"
             f"Script version = {get_commit()}\n\n"
             + ", ".join(
-                f"{r} = {cfg.get(f'configuration_out.chip.registers.{r}')}"
+                f"{r} = {cfg.get(f'configuration_out.chip.registers.{r}', cfg.get(f'configuration_in.chip.registers.{r}'))}"
                 for r in [
                     "IBIAS", "ITHR", "ICASN", "IDB", "ITUNE", "VRESET", "VCASP",
                     "VCASC", "VCLIP", "VL", "VH", "ICOMP", "IDEL", "IRAM",

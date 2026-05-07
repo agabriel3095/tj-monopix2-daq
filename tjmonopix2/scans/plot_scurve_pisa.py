@@ -39,7 +39,10 @@ def main(input_file, overwrite=False, no_fit=False):
     # Open file and fill histograms (actual plotting below)
     with tb.open_file(input_file) as f:
         cfg = get_config_dict(f)
-        tdac = f.root.configuration_out.chip.masks.tdac[:]
+        try:
+            tdac = f.root.configuration_in.chip.masks.tdac[:]
+        except tb.NoSuchNodeError:
+            tdac = f.root.configuration_out.chip.masks.tdac[:]
 
 
         n_hits = f.root.Dut.shape[0]

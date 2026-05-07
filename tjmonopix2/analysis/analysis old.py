@@ -142,36 +142,6 @@ class Analysis(object):
 
         return table
 
-    def _create_hist_arrays(self, out_file, n_scan_params):
-        '''Create disk-backed hit histograms with the legacy output shape.'''
-        filters = tb.Filters(complib='blosc',
-                             complevel=5,
-                             fletcher32=False)
-        hist_occ = out_file.create_carray(out_file.root,
-                                          name='HistOcc',
-                                          title='Occupancy Histogram',
-                                          atom=tb.UInt32Atom(dflt=0),
-                                          shape=(self.columns, self.rows, n_scan_params),
-                                          chunkshape=(64, 64, 1),
-                                          filters=filters)
-        hist_tot = out_file.create_carray(out_file.root,
-                                          name='HistTot',
-                                          title='ToT Histogram',
-                                          atom=tb.UInt16Atom(dflt=0),
-                                          shape=(self.columns, self.rows, n_scan_params, 128),
-                                          chunkshape=(64, 64, 1, 128),
-                                          filters=filters)
-
-        return hist_occ, hist_tot
-
-    def _write_histogram_slice(self, hist_occ_node, hist_tot_node, interpreter, scan_param_id):
-        '''Write the current single-parameter interpreter histograms to disk.'''
-        hist_occ, hist_tot, _ = interpreter.get_histograms()
-        hist_occ_node[:, :, scan_param_id] = hist_occ[:, :, 0]
-        hist_tot_node[:, :, scan_param_id, :] = hist_tot[:, :, 0, :]
-        hist_occ_node.flush()
-        hist_tot_node.flush()
-
     def _setup_clusterizer(self):
         ''' Define data structure and settings for hit clusterizer package '''
         # Define all field names and data types
@@ -364,28 +334,18 @@ class Analysis(object):
                     hist_cs_tot = np.zeros(shape=(cs_tot_size, ), dtype=np.uint32)
                     hist_cs_shape = np.zeros(shape=(300, ), dtype=np.int32)
 
-                hist_occ_node, hist_tot_node = self._create_hist_arrays(out_file, n_scan_params)
-                interpreter = RawDataInterpreter(n_scan_params=1, trigger_data_format=self.tlu_config['DATA_FORMAT'])
+                interpreter = RawDataInterpreter(n_scan_params=n_scan_params, trigger_data_format=self.tlu_config['DATA_FORMAT'])
                 self.last_chunk = False
                 pbar = tqdm(total=n_words, unit=' Words', unit_scale=True)
                 upd = 0
-                current_scan_param_id = None
                 for scan_param_id, words in self._words_of_parameter(par_range, in_file.root.raw_data):
-                    if current_scan_param_id is None:
-                        current_scan_param_id = scan_param_id
-                    elif scan_param_id != current_scan_param_id:
-                        self._write_histogram_slice(hist_occ_node, hist_tot_node, interpreter, current_scan_param_id)
-                        interpreter.reset()
-                        current_scan_param_id = scan_param_id
-
                     hit_buffer = np.zeros(shape=4 * self.chunk_size, dtype=au.hit_dtype)
 
                     hit_dat = interpreter.interpret(
                         words,
                         hit_buffer,
-                        0
+                        scan_param_id
                     )
-                    hit_dat['scan_param_id'] = scan_param_id
                     upd = words.shape[0]
 
                     if self.store_hits:
@@ -439,16 +399,30 @@ class Analysis(object):
                     pbar.update(upd)
                 pbar.close()
 
-                if current_scan_param_id is not None:
-                    self._write_histogram_slice(hist_occ_node, hist_tot_node, interpreter, current_scan_param_id)
+                hist_occ, hist_tot, hist_tdc = interpreter.get_histograms()
 
-        self._create_additional_hit_data()
+        self._create_additional_hit_data(hist_occ, hist_tot)
         if self.cluster_hits:
             self._create_additional_cluster_data(hist_cs_size, hist_cs_tot, hist_cs_shape)
 
-    def _create_additional_hit_data(self):
+    def _create_additional_hit_data(self, hist_occ, hist_tot):
         with tb.open_file(self.analyzed_data_file, 'r+') as out_file:
             scan_id = self.run_config['scan_id']
+
+            out_file.create_carray(out_file.root,
+                                   name='HistOcc',
+                                   title='Occupancy Histogram',
+                                   obj=hist_occ,
+                                   filters=tb.Filters(complib='blosc',
+                                                      complevel=5,
+                                                      fletcher32=False))
+            out_file.create_carray(out_file.root,
+                                   name='HistTot',
+                                   title='ToT Histogram',
+                                   obj=hist_tot,
+                                   filters=tb.Filters(complib='blosc',
+                                                      complevel=5,
+                                                      fletcher32=False))
 
             # if self.analyze_tdc:  # Only store if TDC analysis is used.
             #     out_file.create_carray(out_file.root,
@@ -461,7 +435,6 @@ class Analysis(object):
 
             if scan_id in ['threshold_scan', 'calibrate_tot']:
                 n_injections = self.scan_config['n_injections']
-                hist_occ = out_file.root.HistOcc[:]
                 hist_scurve = hist_occ.reshape((self.rows * self.columns, -1))
 
                 if scan_id in ['threshold_scan', 'calibrate_tot']:

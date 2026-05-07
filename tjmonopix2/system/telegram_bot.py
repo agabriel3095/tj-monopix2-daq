@@ -11,9 +11,8 @@ from telegram.error import NetworkError, TimedOut, TelegramError
 
 # --- Config (prefer env vars; fallback keeps your current behavior) ---
 BOT_TOKEN = os.getenv("TJMP2_TELEGRAM_BOT_TOKEN")
-GROUP_ID = int(os.getenv("TJMP2_TELEGRAM_GROUP_ID"))
-if BOT_TOKEN is None:
-    raise RuntimeError("Telegram bot token not set (TJMP2_TELEGRAM_BOT_TOKEN)")
+GROUP_ID_ENV = os.getenv("TJMP2_TELEGRAM_GROUP_ID")
+GROUP_ID = int(GROUP_ID_ENV) if GROUP_ID_ENV else None
 
 THREAD_ID_SCANS = 2
 THREAD_ID_ANALYSIS = 4
@@ -84,6 +83,9 @@ def send_message_generic(thread_id, msg, pdf_path=None):
     # Never let Telegram break the scan
     if not BOT_TOKEN or BOT_TOKEN.strip() == "":
         print("[telegram_bot] WARNING: BOT_TOKEN missing; skipping Telegram message")
+        return
+    if GROUP_ID is None:
+        print("[telegram_bot] WARNING: GROUP_ID missing; skipping Telegram message")
         return
 
     if not _dns_ok():

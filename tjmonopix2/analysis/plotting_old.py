@@ -24,7 +24,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import colors, cm
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.ticker import FixedLocator, FormatStrFormatter, ScalarFormatter
 
 from tjmonopix2.system import logger
 from tjmonopix2.analysis import analysis_utils as au
@@ -70,10 +69,9 @@ class Plotting(object):
 
         try:
             if isinstance(analyzed_data_file, str):
-                self.in_file = tb.open_file(analyzed_data_file, 'r')
-                root = self.in_file.root
+                in_file = tb.open_file(analyzed_data_file, 'r')
+                root = in_file.root
             else:
-                self.in_file = None
                 root = analyzed_data_file
         except IOError:
             self.log.warning('Interpreted data file does not exist!')
@@ -120,7 +118,7 @@ class Plotting(object):
         except tb.NoSuchNodeError:
             self.HistTdcStatus = None
         self.HistOcc = root.HistOcc[:]
-        self.HistTot = root.HistTot
+        self.HistTot = root.HistTot[:]
         if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot', 'fast_threshold_scan', 'in_time_threshold_scan', 'autorange_threshold_scan', 'crosstalk_scan']:
             self.ThresholdMap = root.ThresholdMap[:, :]
             self.Chi2Map = root.Chi2Map[:, :]
@@ -201,185 +199,7 @@ class Plotting(object):
             self.log.info('Closing output PDF file: {0}'.format(self.out_file._file.fh.name))
             self.out_file.close()
             shutil.copyfile(self.filename, os.path.join(os.path.split(self.filename)[0], 'last_scan.pdf'))
-        if getattr(self, 'in_file', None) is not None:
-            self.in_file.close()
         telegram_bot.send_message_scan(self.run_config, self.filename)
-
-    def _sum_hist_tot(self):
-        '''Return the full ToT histogram without loading HistTot completely.'''
-        if isinstance(self.HistTot, np.ndarray):
-            return self.HistTot.sum(axis=(0, 1, 2)).T
-
-        hist = np.zeros(self.HistTot.shape[3], dtype=np.uint64)
-        for scan_param_id in range(self.HistTot.shape[2]):
-            for col_start in range(0, self.HistTot.shape[0], 64):
-                col_stop = min(col_start + 64, self.HistTot.shape[0])
-                hist += self.HistTot[col_start:col_stop, :, scan_param_id, :].sum(axis=(0, 1)).astype(np.uint64)
-        return hist
-
-    def _sum_hist_tot_by_scan_param(self):
-        '''Return ToT-vs-scan-parameter histogram without loading HistTot fully.'''
-        if isinstance(self.HistTot, np.ndarray):
-            return self.HistTot.sum(axis=(0, 1)).T
-
-        hist = np.zeros((self.HistTot.shape[3], self.HistTot.shape[2]), dtype=np.uint64)
-        for scan_param_id in range(self.HistTot.shape[2]):
-            for col_start in range(0, self.HistTot.shape[0], 64):
-                col_stop = min(col_start + 64, self.HistTot.shape[0])
-                hist[:, scan_param_id] += self.HistTot[col_start:col_stop, :, scan_param_id, :].sum(axis=(0, 1)).astype(np.uint64)
-        return hist
-
-    def _sum_hist_tot_per_pixel(self):
-        '''Return per-pixel ToT counts and weighted sums without loading HistTot fully.'''
-        bins = np.arange(self.HistTot.shape[3], dtype=np.uint64)
-        if isinstance(self.HistTot, np.ndarray):
-            counts = self.HistTot.sum(axis=2).astype(np.uint64)
-            total = counts.sum(axis=2)
-            weighted = np.tensordot(counts, bins, axes=([2], [0]))
-            return total, weighted
-
-        total = np.zeros(self.HistTot.shape[:2], dtype=np.uint64)
-        weighted = np.zeros(self.HistTot.shape[:2], dtype=np.uint64)
-        for scan_param_id in range(self.HistTot.shape[2]):
-            for col_start in range(0, self.HistTot.shape[0], 64):
-                col_stop = min(col_start + 64, self.HistTot.shape[0])
-                chunk = self.HistTot[col_start:col_stop, :, scan_param_id, :].astype(np.uint64)
-                total[col_start:col_stop, :] += chunk.sum(axis=2)
-                weighted[col_start:col_stop, :] += np.tensordot(chunk, bins, axes=([2], [0]))
-        return total, weighted
-
-    def _plot_scan_area_map(self, hist, suffix, title, **kwargs):
-        '''Plot a cropped scan-area copy with original row/column coordinates.'''
-        if not all(k in self.scan_config for k in ('start_column', 'stop_column', 'start_row', 'stop_row')):
-            return
-
-        start_column = int(self.scan_config['start_column'])
-        stop_column = int(self.scan_config['stop_column'])
-        start_row = int(self.scan_config['start_row'])
-        stop_row = int(self.scan_config['stop_row'])
-        hist_scan_area = hist[start_row:stop_row, start_column:stop_column]
-        old_plot_box_bounds = self.plot_box_bounds
-        self.plot_box_bounds = [
-            start_column + 0.5,
-            stop_column + 0.5,
-            stop_row + 0.5,
-            start_row + 0.5,
-        ]
-        try:
-            self._plot_occupancy(hist=hist_scan_area,
-                                 suffix=suffix,
-                                 title=title,
-                                 aspect='auto',
-                                 **kwargs)
-        finally:
-            self.plot_box_bounds = old_plot_box_bounds
-
-    def _plot_scan_area_fancy_map(self, hist, suffix, title, **kwargs):
-        '''Plot a cropped scan-area copy for maps with projections.'''
-        if not all(k in self.scan_config for k in ('start_column', 'stop_column', 'start_row', 'stop_row')):
-            return
-
-        start_column = int(self.scan_config['start_column'])
-        stop_column = int(self.scan_config['stop_column'])
-        start_row = int(self.scan_config['start_row'])
-        stop_row = int(self.scan_config['stop_row'])
-        hist_scan_area = hist[start_row:stop_row, start_column:stop_column]
-        old_plot_box_bounds = self.plot_box_bounds
-        self.plot_box_bounds = [
-            start_column + 0.5,
-            stop_column + 0.5,
-            stop_row + 0.5,
-            start_row + 0.5,
-        ]
-        try:
-            self._plot_fancy_occupancy(hist=hist_scan_area,
-                                       suffix=suffix,
-                                       title=title,
-                                       **kwargs)
-        finally:
-            self.plot_box_bounds = old_plot_box_bounds
-
-    def _set_pixel_axis_ticks(self, ax):
-        def get_ticks(low, high):
-            start = int(round(min(low, high) - 0.5))
-            stop = int(round(max(low, high) - 0.5))
-            span = stop - start
-            if span >= 512:
-                step = 64
-            elif span >= 256:
-                step = 64
-            elif span >= 128:
-                step = 32
-            elif span >= 64:
-                step = 16
-            elif span >= 32:
-                step = 8
-            elif span >= 16:
-                step = 4
-            elif span >= 8:
-                step = 2
-            else:
-                step = 1
-
-            labels = list(range(start, stop + 1, step))
-            if labels[0] != start:
-                labels.insert(0, start)
-            if labels[-1] != stop:
-                labels.append(stop)
-            positions = [label + 0.5 for label in labels]
-            return positions, labels
-
-        x_positions, x_labels = get_ticks(self.plot_box_bounds[0], self.plot_box_bounds[1])
-        y_positions, y_labels = get_ticks(self.plot_box_bounds[2], self.plot_box_bounds[3])
-        ax.xaxis.set_major_locator(FixedLocator(x_positions))
-        ax.yaxis.set_major_locator(FixedLocator(y_positions))
-        ax.set_xticklabels([str(label) for label in x_labels])
-        ax.set_yticklabels([str(label) for label in y_labels])
-
-    def _integer_colorbar_ticks(self, z_min, z_max):
-        start = int(math.floor(z_min))
-        stop = int(math.ceil(z_max))
-        span = max(1, stop - start)
-        if span <= 16:
-            step = 1
-        elif span <= 32:
-            step = 2
-        elif span <= 64:
-            step = 4
-        elif span <= 128:
-            step = 8
-        else:
-            step = int(math.ceil(span / 16.0))
-
-        ticks = list(range(start, stop + 1, step))
-        if ticks[0] != start:
-            ticks.insert(0, start)
-        if ticks[-1] != stop:
-            ticks.append(stop)
-        return np.array(ticks)
-
-    def _resolve_map_z_limits(self, hist, z_min=None, z_max=None):
-        if z_max == 'median':
-            z_max = 2 * np.ma.median(hist)
-        elif z_max == 'maximum':
-            z_max = np.ma.max(hist)
-        elif z_max is None:
-            try:
-                z_max = np.nanpercentile(hist.filled(np.nan), q=90)
-                if np.any(hist[np.isfinite(hist)] > z_max):
-                    z_max = 1.1 * z_max
-            except TypeError:
-                z_max = np.ma.max(hist)
-        if z_max < 1 or hist.all() is np.ma.masked:
-            z_max = 1.0
-
-        if z_min is None:
-            z_min = np.ma.min(hist)
-            if z_min < 0:
-                z_min = 0
-        if z_min == z_max or hist.all() is np.ma.masked:
-            z_min = 0
-        return z_min, z_max
 
     ''' User callable plotting functions '''
     def create_standard_plots(self):
@@ -402,7 +222,6 @@ class Plotting(object):
                 self.create_tdac_plot()
                 self.create_tdac_map()
                 self.create_tot_plot()
-                self.create_tot_map()
             if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot']:
                 self.create_tot_hist()
                 self.create_scurves_plot()
@@ -445,7 +264,6 @@ class Plotting(object):
             self.create_tdac_plot()
             self.create_tdac_map()
         self.create_tot_plot()
-        self.create_tot_map()
 
     def _monitoring_enabled_in_pdf(self):
         if not self.monitoring_group:
@@ -706,20 +524,10 @@ class Plotting(object):
                 title = 'Occupancy'
                 z_max = None
 
-            hist = np.ma.masked_array(self.HistOcc[:].sum(axis=2), self.enable_mask).T
-            z_min, z_max = self._resolve_map_z_limits(hist, z_max=z_max)
-            self._plot_occupancy(hist=hist,
-                                 z_min=z_min,
+            self._plot_occupancy(hist=np.ma.masked_array(self.HistOcc[:].sum(axis=2), self.enable_mask).T,
                                  z_max=z_max,
                                  suffix='occupancy',
-                                 title=title,
-                                 colorbar_scientific=True)
-            self._plot_scan_area_map(hist=hist,
-                                     z_min=z_min,
-                                     z_max=z_max,
-                                     suffix='occupancy_scan_area',
-                                     title=title + ' scan area',
-                                     colorbar_scientific=True)
+                                 title=title)
         except Exception:
             self.log.error('Could not create occupancy map!')
 
@@ -732,9 +540,8 @@ class Plotting(object):
     def create_tot_plot(self):
         ''' Create 1D tot plot '''
         try:
-            hist_tot = self._sum_hist_tot()
-            title = ('Time-over-Threshold distribution ($\\Sigma$ = {0:1.0f})'.format(np.sum(hist_tot)))
-            self._plot_1d_hist(hist=hist_tot,
+            title = ('Time-over-Threshold distribution ($\\Sigma$ = {0:1.0f})'.format(np.sum(self.HistTot.sum(axis=(0, 1, 2)).T)))
+            self._plot_1d_hist(hist=self.HistTot.sum(axis=(0, 1, 2)).T,
                                title=title,
                                log_y=False,
                                plot_range=range(0, self.HistTot.shape[3]),
@@ -746,41 +553,11 @@ class Plotting(object):
         except Exception:
             self.log.error('Could not create tot plot!')
 
-    def create_tot_map(self):
-        '''Create average ToT map from HistTot using chunked reads.'''
-        try:
-            total, weighted = self._sum_hist_tot_per_pixel()
-            if not np.any(total):
-                return
-            mean_tot = np.zeros(total.shape, dtype=float)
-            np.divide(weighted, total, out=mean_tot, where=total > 0)
-            z_min = 0
-            z_max = int(np.ceil(np.nanmax(mean_tot[total > 0])))
-            hist = np.ma.masked_array(mean_tot, self.enable_mask).T
-            self._plot_occupancy(hist=hist,
-                                 title='Average ToT map',
-                                 z_label='ToT code',
-                                 z_min=z_min,
-                                 z_max=z_max,
-                                 suffix='tot_map',
-                                 colorbar_integer=True,
-                                 extend_upper_bound=False)
-            self._plot_scan_area_map(hist=hist,
-                                     title='Average ToT map scan area',
-                                     z_label='ToT code',
-                                     z_min=z_min,
-                                     z_max=z_max,
-                                     suffix='tot_map_scan_area',
-                                     colorbar_integer=True,
-                                     extend_upper_bound=False)
-        except Exception:
-            self.log.error('Could not create average ToT map!')
-
     def create_tot_hist(self):
         try:
-            data = self._sum_hist_tot_by_scan_param()
-            self._plot_2d_param_hist(hist=data,
-                                     y_max=self.HistTot.shape[3],
+            data = self.HistTot
+            self._plot_2d_param_hist(hist=data.sum(axis=(0, 1)).T,
+                                     y_max=data.shape[3],
                                      scan_parameters=self.scan_parameter_range,
                                      electron_axis=False,
                                      scan_parameter_name='$\\Delta$ VCAL',
@@ -818,22 +595,21 @@ class Plotting(object):
     def create_threshold_plot(self, logscale=False, scan_parameter_name='Scan parameter'):
         try:
             title = 'Threshold distribution for enabled pixels'
-            threshold_data = self.ThresholdMap[self.Chi2Sel].T
             if self.run_config['scan_id'] == 'injection_delay_scan':
                 scan_parameter_name = 'Finedelay [LSB]'
                 plot_electron_axis = False
                 plot_range = range(0, 16)
                 title = 'Fine delay distribution for enabled pixels'
             elif self.run_config['scan_id'] == 'global_threshold_tuning':
-                plot_range = self._threshold_distribution_range(threshold_data, margin=5)
+                plot_range = self.scan_parameter_range
                 scan_parameter_name = self.scan_config['VTH_name']
                 plot_electron_axis = False
             else:
-                plot_range = self._threshold_distribution_range(threshold_data, margin=5)
+                plot_range = self.scan_parameter_range
                 scan_parameter_name = '$\\Delta$ VCAL'
                 plot_electron_axis = self.plot_electron_axis
 
-            self._plot_distribution(threshold_data,
+            self._plot_distribution(self.ThresholdMap[self.Chi2Sel].T,
                                     plot_range=plot_range,
                                     electron_axis=plot_electron_axis,
                                     x_axis_title=scan_parameter_name,
@@ -845,28 +621,11 @@ class Plotting(object):
         except Exception as e:
             self.log.error('Could not create threshold plot! ({0})'.format(e))
 
-    def _threshold_distribution_range(self, data, margin=5):
-        data = np.ma.masked_invalid(np.ma.array(data, copy=False))
-        data = data.compressed()
-        data = data[data < 1e5]
-        if data.size == 0:
-            return self.scan_parameter_range
-
-        scan_min = min(self.scan_parameter_range)
-        scan_max = max(self.scan_parameter_range)
-        lower = max(scan_min, math.floor(float(np.nanmin(data)) - margin))
-        upper = min(scan_max, math.ceil(float(np.nanmax(data)) + margin))
-        if upper <= lower:
-            upper = lower + 1
-        step = 1 if upper - lower <= 100 else max(1, int(math.ceil((upper - lower) / 100.0)))
-        return np.arange(lower, upper + step, step)
-
     def create_stacked_threshold_plot(self, scan_parameter_name='Scan parameter'):
         try:
             min_tdac, max_tdac, range_tdac, _ = (1, 7, 7, 1)
-            threshold_data = self.ThresholdMap[self.Chi2Sel].T
 
-            plot_range = self._threshold_distribution_range(threshold_data, margin=5)
+            plot_range = self.scan_parameter_range
             if self.run_config['scan_id'] == 'global_threshold_tuning':
                 scan_parameter_name = self.scan_config['VTH_name']
                 plot_electron_axis = False
@@ -874,7 +633,7 @@ class Plotting(object):
                 scan_parameter_name = '$\\Delta$ VCAL'
                 plot_electron_axis = self.plot_electron_axis
 
-            self._plot_stacked_threshold(data=threshold_data,
+            self._plot_stacked_threshold(data=self.ThresholdMap[self.Chi2Sel].T,
                                          tdac_mask=self.tdac_mask[self.Chi2Sel].T,
                                          plot_range=plot_range,
                                          electron_axis=plot_electron_axis,
@@ -908,9 +667,7 @@ class Plotting(object):
                 z_min = None
                 z_max = None
 
-            hist = np.ma.masked_array(self.ThresholdMap, mask).T
-            z_min, z_max = self._resolve_map_z_limits(hist, z_min=z_min, z_max=z_max)
-            self._plot_occupancy(hist=hist,
+            self._plot_occupancy(hist=np.ma.masked_array(self.ThresholdMap, mask).T,
                                  electron_axis=plot_electron_axis,
                                  z_label=z_label,
                                  title=title,
@@ -918,18 +675,7 @@ class Plotting(object):
                                  show_sum=False,
                                  z_min=z_min,
                                  z_max=z_max,
-                                 suffix='threshold_map',
-                                 colorbar_tick_count=6)
-            self._plot_scan_area_map(hist=hist,
-                                     electron_axis=plot_electron_axis,
-                                     z_label=z_label,
-                                     title=title + ' scan area',
-                                     use_electron_offset=use_electron_offset,
-                                     show_sum=False,
-                                     z_min=z_min,
-                                     z_max=z_max,
-                                     suffix='threshold_map_scan_area',
-                                     colorbar_tick_count=6)
+                                 suffix='threshold_map')
         except Exception:
             self.log.error('Could not create threshold map!')
 
@@ -976,28 +722,14 @@ class Plotting(object):
                 z_label = 'Finedelay [LSB]'
                 title = 'Injection Delay Noise'
                 plot_electron_axis = False
-            hist = np.ma.masked_array(self.NoiseMap, mask).T
-            z_min, z_max = self._resolve_map_z_limits(hist, z_max='median')
-            self._plot_occupancy(hist=hist,
+            self._plot_occupancy(hist=np.ma.masked_array(self.NoiseMap, mask).T,
                                  electron_axis=plot_electron_axis,
                                  use_electron_offset=False,
                                  z_label=z_label,
-                                 z_min=z_min,
-                                 z_max=z_max,
+                                 z_max='median',
                                  title=title,
                                  show_sum=False,
-                                 suffix='noise_map',
-                                 colorbar_tick_count=6)
-            self._plot_scan_area_map(hist=hist,
-                                     electron_axis=plot_electron_axis,
-                                     use_electron_offset=False,
-                                     z_label=z_label,
-                                     z_min=z_min,
-                                     z_max=z_max,
-                                     title=title + ' scan area',
-                                     show_sum=False,
-                                     suffix='noise_map_scan_area',
-                                     colorbar_tick_count=6)
+                                 suffix='noise_map')
         except Exception:
             self.log.error('Could not create noise map!')
 
@@ -1020,23 +752,13 @@ class Plotting(object):
         try:
             mask = self.enable_mask.copy()
             min_tdac, max_tdac = (1, 7)
-            hist = np.ma.masked_array(self.tdac_mask, mask).T
-            self._plot_fancy_occupancy(hist=hist,
+            self._plot_fancy_occupancy(hist=np.ma.masked_array(self.tdac_mask, mask).T,
                                        title='TDAC map',
                                        z_label='TDAC',
                                        z_min=min(min_tdac, max_tdac),
                                        z_max=max(min_tdac, max_tdac),
                                        log_z=False, centered_ticks=True,
                                        norm_projection=True)
-            self._plot_scan_area_fancy_map(hist=hist,
-                                           title='TDAC map scan area',
-                                           z_label='TDAC',
-                                           z_min=min(min_tdac, max_tdac),
-                                           z_max=max(min_tdac, max_tdac),
-                                           log_z=False,
-                                           centered_ticks=True,
-                                           norm_projection=True,
-                                           suffix='tdac_map_scan_area')
         except Exception:
             self.log.error('Could not create TDAC map!')
 
@@ -1047,24 +769,12 @@ class Plotting(object):
             sel = chi2 > 0.  # Mask not converged fits (chi2 = 0)
             mask[~sel] = True
 
-            hist = np.ma.masked_array(chi2, mask).T
-            z_min, z_max = self._resolve_map_z_limits(hist, z_max='median')
-            self._plot_occupancy(hist=hist,
+            self._plot_occupancy(hist=np.ma.masked_array(chi2, mask).T,
                                  z_label='Chi2/ndf.',
-                                 z_min=z_min,
-                                 z_max=z_max,
+                                 z_max='median',
                                  title='Chi2 over ndf of S-Curve fits',
                                  show_sum=False,
-                                 suffix='chi2_map',
-                                 colorbar_tick_count=6)
-            self._plot_scan_area_map(hist=hist,
-                                     z_label='Chi2/ndf.',
-                                     z_min=z_min,
-                                     z_max=z_max,
-                                     title='Chi2 over ndf of S-Curve fits scan area',
-                                     show_sum=False,
-                                     suffix='chi2_map_scan_area',
-                                     colorbar_tick_count=6)
+                                 suffix='chi2_map')
         except Exception:
             self.log.error('Could not create chi2 map!')
 
@@ -1192,7 +902,6 @@ class Plotting(object):
     def _add_electron_axis(self, fig, ax, use_electron_offset=False):
         fig.subplots_adjust(top=0.75)
         ax.title.set_position([.5, 1.15])
-        ax.xaxis.set_major_formatter(FormatStrFormatter('%.1f'))
 
         fig.canvas.draw()
         ax2 = ax.twiny()
@@ -1200,6 +909,8 @@ class Plotting(object):
         xticks = []
         for t in ax.get_xticks(minor=False):
             xticks.append(int(self._convert_to_e(float(t), use_offset=use_electron_offset)[0]))
+
+        ax2.set_xticklabels(xticks)
 
         l1 = ax.get_xlim()
         l2 = ax2.get_xlim()
@@ -1301,8 +1012,27 @@ class Plotting(object):
 
         self._save_plots(fig, suffix='parameter_page')
 
-    def _plot_occupancy(self, hist, electron_axis=False, use_electron_offset=False, title='Occupancy', z_label='# of hits', z_min=None, z_max=None, show_sum=True, suffix=None, extend_upper_bound=True, aspect='equal', colorbar_tick_count=10, colorbar_integer=False, colorbar_scientific=False):
-        z_min, z_max = self._resolve_map_z_limits(hist, z_min=z_min, z_max=z_max)
+    def _plot_occupancy(self, hist, electron_axis=False, use_electron_offset=False, title='Occupancy', z_label='# of hits', z_min=None, z_max=None, show_sum=True, suffix=None, extend_upper_bound=True):
+        if z_max == 'median':
+            z_max = 2 * np.ma.median(hist)
+        elif z_max == 'maximum':
+            z_max = np.ma.max(hist)
+        elif z_max is None:
+            try:
+                z_max = np.nanpercentile(hist.filled(np.nan), q=90)
+                if np.any(hist[np.isfinite(hist)] > z_max):
+                    z_max = 1.1 * z_max
+            except TypeError:
+                z_max = np.ma.max(hist)
+        if z_max < 1 or hist.all() is np.ma.masked:
+            z_max = 1.0
+
+        if z_min is None:
+            z_min = np.ma.min(hist)
+            if z_min < 0:
+                z_min = 0
+        if z_min == z_max or hist.all() is np.ma.masked:
+            z_min = 0
 
         fig = Figure()
         FigureCanvas(fig)
@@ -1318,10 +1048,9 @@ class Plotting(object):
         cmap.set_under('g')
         norm = colors.BoundaryNorm(bounds, cmap.N)
 
-        im = ax.imshow(hist, interpolation='none', aspect=aspect, cmap=cmap, norm=norm, extent=extent)  # TODO: use pcolor or pcolormesh
+        im = ax.imshow(hist, interpolation='none', aspect='equal', cmap=cmap, norm=norm, extent=extent)  # TODO: use pcolor or pcolormesh
         ax.set_ylim((self.plot_box_bounds[2], self.plot_box_bounds[3]))
         ax.set_xlim((self.plot_box_bounds[0], self.plot_box_bounds[1]))
-        self._set_pixel_axis_ticks(ax)
         if not show_sum:
             ax.set_title(title, color=TITLE_COLOR)
         else:
@@ -1335,31 +1064,17 @@ class Plotting(object):
             ax.set_ylabel('Column')
 
         divider = make_axes_locatable(ax)
-        if colorbar_integer:
-            ticks = self._integer_colorbar_ticks(z_min, z_max)
-        else:
-            ticks = np.linspace(start=z_min, stop=z_max + (1 if extend_upper_bound else 0), num=colorbar_tick_count, endpoint=True)
+        ticks = np.linspace(start=z_min, stop=z_max + (1 if extend_upper_bound else 0), num=10, endpoint=True)
         if self.cb_side:  # and not electron_axis:
             pad = 0.8 if electron_axis else 0.2
             cax = divider.append_axes("right", size="5%", pad=pad)
             cb = fig.colorbar(im, cax=cax, ticks=ticks)
-            axis = cb.ax.yaxis
+            cax.set_yticklabels([round(x, 1) for x in ticks])
         else:
             pad = 1.0 if electron_axis else 0.6
             cax = divider.append_axes("bottom", size="5%", pad=pad)
             cb = fig.colorbar(im, cax=cax, ticks=ticks, orientation='horizontal')
-            axis = cb.ax.xaxis
-        if colorbar_scientific:
-            formatter = ScalarFormatter(useMathText=True)
-            formatter.set_powerlimits((0, 0))
-            axis.set_major_formatter(formatter)
-            cb.update_ticks()
-        elif colorbar_integer:
-            axis.set_major_formatter(FormatStrFormatter('%d'))
-            cb.update_ticks()
-        else:
-            axis.set_major_formatter(FormatStrFormatter('%.1f'))
-            cb.update_ticks()
+            cax.set_xticklabels([round(x, 1) for x in ticks])
         cb.set_label(z_label)
 
         if electron_axis:
@@ -1375,8 +1090,6 @@ class Plotting(object):
             e_ax.set_ticks(ticks)
             e_ax.set_ticklabels(f(ticks).round().astype(int))
             e_ax.set_label_text('{0} [Electrons]'.format(z_label))
-            axis.set_major_formatter(FormatStrFormatter('%.2f'))
-            cb.update_ticks()
             cb.set_label('{0} [$\\Delta$ VCAL]'.format(z_label))
 
         self._save_plots(fig, suffix=suffix)
@@ -1453,7 +1166,6 @@ class Plotting(object):
         im = ax.imshow(hist, interpolation='none', aspect='auto', cmap=cmap, norm=norm, extent=extent)  # TODO: use pcolor or pcolormesh
         ax.set_ylim((self.plot_box_bounds[2], self.plot_box_bounds[3]))
         ax.set_xlim((self.plot_box_bounds[0], self.plot_box_bounds[1]))
-        self._set_pixel_axis_ticks(ax)
         if self._module_type is None or not self._module_type.switch_axis():
             ax.set_xlabel('Column')
             ax.set_ylabel('Row')
@@ -1486,8 +1198,7 @@ class Plotting(object):
         else:
             hight = np.ma.sum(hist, axis=0)
 
-        x_positions = np.linspace(self.plot_box_bounds[0] + 0.5, self.plot_box_bounds[1] - 0.5, hist.shape[1])
-        axHistx.bar(x=x_positions, height=hight, align='center', linewidth=0)
+        axHistx.bar(x=range(1, hist.shape[1] + 1), height=hight, align='center', linewidth=0)
         axHistx.set_xlim((self.plot_box_bounds[0], self.plot_box_bounds[1]))
         if hist.all() is np.ma.masked:
             axHistx.set_ylim((0, 1))
@@ -1499,10 +1210,7 @@ class Plotting(object):
         else:
             width = np.ma.sum(hist, axis=1)
 
-        y_positions = np.linspace(min(self.plot_box_bounds[2], self.plot_box_bounds[3]) + 0.5,
-                                  max(self.plot_box_bounds[2], self.plot_box_bounds[3]) - 0.5,
-                                  hist.shape[0])
-        axHisty.barh(y=y_positions, width=width, align='center', linewidth=0)
+        axHisty.barh(y=range(1, hist.shape[0] + 1), width=width, align='center', linewidth=0)
         axHisty.set_ylim((self.plot_box_bounds[2], self.plot_box_bounds[3]))
         if hist.all() is np.ma.masked:
             axHisty.set_xlim((0, 1))
@@ -1518,27 +1226,34 @@ class Plotting(object):
         self._save_plots(fig, suffix=suffix)
 
     def _plot_scurves(self, scurves, scan_parameters, electron_axis=False, scan_parameter_name=None, suffix='scurves', title='S-curves', ylabel='Occupancy'):
+        max_occ = np.max(scurves) + 50
+        if self.run_config['scan_id'] == 'autorange_threshold_scan':
+            max_occ = int(np.max(scurves) + 5)
         n_injections = self.scan_config.get('n_injections', 100)
         y_max = int(n_injections * 1.5)
-        max_occ = y_max + 2
-        if self.run_config['scan_id'] == 'autorange_threshold_scan':
-            max_occ = int(min(np.max(scurves) + 5, y_max + 2))
         x_bins = scan_parameters  # np.arange(-0.5, max(scan_parameters) + 1.5)
         y_bins = np.arange(-0.5, max_occ + 0.5)
 
-        noisy_mask = np.any(scurves > y_max, axis=0).reshape((self.cols, self.rows))
-        n_noisy_pixels = np.count_nonzero(noisy_mask & ~self.enable_mask)
+        coords = {}
+        for col in range(self.cols):
+            for row in range(self.rows):
+                coords[col * self.rows + row] = (col, row)
+        noisy_pixels = []
+        for param in scurves:
+            for pixel_num, pixel_occ in enumerate(param):
+                c = coords[pixel_num]
+                if pixel_occ > y_max and c not in noisy_pixels:
+                    noisy_pixels.append(c)
+        n_noisy_pixels = len(noisy_pixels)
 
         param_count = scurves.shape[0]
         hist = np.empty([param_count, max_occ], dtype=np.uint32)
-        scurves_clipped = np.clip(scurves, 0, max_occ - 1)
-        enabled_pixels = ~self.enable_mask.reshape((scurves.shape[-1]))
 
         for param in range(param_count):
             if self.run_config['scan_id'] == 'autorange_threshold_scan':
-                hist[param] = np.bincount(scurves_clipped[param, enabled_pixels].astype(int), minlength=max_occ)
+                hist[param] = np.bincount(scurves[param, ~self.enable_mask.reshape((scurves.shape[-1]))].astype(int), minlength=max_occ)
             else:
-                hist[param] = np.bincount(scurves_clipped[param, enabled_pixels], minlength=max_occ)
+                hist[param] = np.bincount(scurves[param, ~self.enable_mask.reshape((scurves.shape[-1]))], minlength=max_occ)
 
         fig = Figure()
         FigureCanvas(fig)
@@ -1663,17 +1378,17 @@ class Plotting(object):
             mean = np.nanmean(data[sel])
             rms = np.nanstd(data[sel])
             if electron_axis:
-                textright = '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\;\\;\\,=({1[0]:1.0f} \\pm {1[1]:1.0f}) \\; e^-$\n\n$\\sigma={2:1.2f}\\;\\Delta$VCAL\n$\\;\\;\\,=({3[0]:1.0f} \\pm {3[1]:1.0f}) \\; e^-$'.format(mean, self._convert_to_e(mean), rms, self._convert_to_e(rms, use_offset=False))
+                textright = '$\\mu={0:1.1f}\\;\\Delta$VCAL\n$\\;\\;\\,=({1[0]:1.0f} \\pm {1[1]:1.0f}) \\; e^-$\n\n$\\sigma={2:1.1f}\\;\\Delta$VCAL\n$\\;\\;\\,=({3[0]:1.0f} \\pm {3[1]:1.0f}) \\; e^-$'.format(mean, self._convert_to_e(mean), rms, self._convert_to_e(rms, use_offset=False))
             else:
-                textright = '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\sigma={1:1.2f}\\;\\Delta$VCAL'.format(mean, rms)
+                textright = '$\\mu={0:1.1f}\\;\\Delta$VCAL\n$\\sigma={1:1.1f}\\;\\Delta$VCAL'.format(mean, rms)
 
             # Fit results
             if coeff is not None:
                 textright += '\n\nFit results:\n'
                 if electron_axis:
-                    textright += '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\;\\;\\,=({1[0]:1.0f} \\pm {1[1]:1.0f}) \\; e^-$\n\n$\\sigma={2:1.2f}\\;\\Delta$VCAL\n$\\;\\;\\,=({3[0]:1.0f} \\pm {3[1]:1.0f}) \\; e^-$'.format(abs(coeff[1]), self._convert_to_e(abs(coeff[1])), abs(coeff[2]), self._convert_to_e(abs(coeff[2]), use_offset=False))
+                    textright += '$\\mu={0:1.1f}\\;\\Delta$VCAL\n$\\;\\;\\,=({1[0]:1.0f} \\pm {1[1]:1.0f}) \\; e^-$\n\n$\\sigma={2:1.1f}\\;\\Delta$VCAL\n$\\;\\;\\,=({3[0]:1.0f} \\pm {3[1]:1.0f}) \\; e^-$'.format(abs(coeff[1]), self._convert_to_e(abs(coeff[1])), abs(coeff[2]), self._convert_to_e(abs(coeff[2]), use_offset=False))
                 else:
-                    textright += '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\sigma={1:1.2f}\\;\\Delta$VCAL'.format(abs(coeff[1]), abs(coeff[2]))
+                    textright += '$\\mu={0:1.1f}\\;\\Delta$VCAL\n$\\sigma={1:1.1f}\\;\\Delta$VCAL'.format(abs(coeff[1]), abs(coeff[2]))
 
                 textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves)
                 props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)

@@ -4,7 +4,7 @@ gitpython
 matplotlib
 numba
 numpy<2
-online_monitor==0.6.0
+# online_monitor==0.6.0
 pandas
 pexpect
 pixel-clusterizer

@@ -6,7 +6,7 @@
 #
 
 from tjmonopix2.analysis import analysis, plotting
-from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
+from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,git 
                                                shift_and_inject)
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
@@ -24,7 +24,7 @@ scan_configuration = {
     'VCAL_HIGH': 140,
     'VCAL_LOW_start': 140-0,
     # 'VCAL_LOW_stop': 140-20,
-    'VCAL_LOW_stop': 140-140,
+    'VCAL_LOW_stop': 140-40,
     'VCAL_LOW_step': -1
 
 
@@ -49,6 +49,11 @@ scan_configuration = {
 
 class ThresholdScan(ScanBase):
     scan_id = 'threshold_scan'
+
+    def _update_readout_progress(self, pbar):
+        words = getattr(self.fifo_readout, '_record_count', 0)
+        words_offset = getattr(self, '_progress_words_offset', 0)
+        pbar.set_postfix({'words': f'{words_offset + words:,}'}, refresh=False)
 
     def _configure(self, start_column=0, stop_column=512, start_row=0, stop_row=512, **_):
         self.chip.masks['enable'][start_column:stop_column, start_row:stop_row] = True
@@ -217,17 +222,21 @@ class ThresholdScan(ScanBase):
 
         self.chip.registers["VH"].write(VCAL_HIGH)
         vcal_low_range = range(VCAL_LOW_start, VCAL_LOW_stop, VCAL_LOW_step)
+        self._progress_words_offset = 0
 
-        pbar = tqdm(total=get_scan_loop_mask_steps(self.chip) * len(vcal_low_range), unit='Mask steps')
+        pbar = tqdm(total=get_scan_loop_mask_steps(self.chip) * len(vcal_low_range), unit='step', desc='Threshold scan')
         for scan_param_id, vcal_low in enumerate(vcal_low_range):
             self.chip.registers["VL"].write(vcal_low)
 
             self.store_scan_par_values(scan_param_id=scan_param_id, vcal_high=VCAL_HIGH, vcal_low=vcal_low)
             with self.readout(scan_param_id=scan_param_id):
                 #shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id)
-                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,PulseStartCnfg=19)
+                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,
+                                 PulseStartCnfg=19, progress_callback=lambda: self._update_readout_progress(pbar))
                 # if we want to measure ANAMON0 and ANAMON1 at the same time, the following line inject in all rows at the same time
                 #  self.chip.inject(PulseStartCnfg=19, PulseStopCnfg=19+900, repetitions=n_injections, wait_cycles=1, latency=1400)
+            self._progress_words_offset += getattr(self.fifo_readout, '_record_count', 0)
+        self._update_readout_progress(pbar)
         pbar.close()
         self.log.success('Scan finished')
 

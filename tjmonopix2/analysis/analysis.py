@@ -172,6 +172,20 @@ class Analysis(object):
         hist_occ_node.flush()
         hist_tot_node.flush()
 
+    def _get_scan_roi(self):
+        '''Return the configured scan ROI, clipped to the matrix bounds.'''
+        start_column = int(self.scan_config.get('start_column', 0))
+        stop_column = int(self.scan_config.get('stop_column', self.columns))
+        start_row = int(self.scan_config.get('start_row', 0))
+        stop_row = int(self.scan_config.get('stop_row', self.rows))
+
+        start_column = max(0, min(start_column, self.columns))
+        stop_column = max(start_column, min(stop_column, self.columns))
+        start_row = max(0, min(start_row, self.rows))
+        stop_row = max(start_row, min(stop_row, self.rows))
+
+        return start_column, stop_column, start_row, stop_row
+
     def _setup_clusterizer(self):
         ''' Define data structure and settings for hit clusterizer package '''
         # Define all field names and data types
@@ -459,18 +473,30 @@ class Analysis(object):
             #                                               complevel=5,
             #                                               fletcher32=False))
 
-            if scan_id in ['threshold_scan', 'calibrate_tot']:
+            if scan_id in ['threshold_scan', 'calibrate_tot', 'autorange_threshold_scan']:
                 n_injections = self.scan_config['n_injections']
-                hist_occ = out_file.root.HistOcc[:]
-                hist_scurve = hist_occ.reshape((self.rows * self.columns, -1))
+                start_column, stop_column, start_row, stop_row = self._get_scan_roi()
+                hist_occ_roi = out_file.root.HistOcc[start_column:stop_column, start_row:stop_row, :]
+                roi_shape = (stop_column - start_column, stop_row - start_row)
+                hist_scurve = hist_occ_roi.reshape((roi_shape[0] * roi_shape[1], -1))
 
                 if scan_id in ['threshold_scan', 'calibrate_tot']:
                     scan_params = [self.scan_config['VCAL_HIGH'] - v for v in range(self.scan_config['VCAL_LOW_start'],
                                                                                     self.scan_config['VCAL_LOW_stop'], self.scan_config['VCAL_LOW_step'])]
-                    self.threshold_map, self.noise_map, self.chi2_map = au.fit_scurves_multithread(hist_scurve, scan_params, n_injections, optimize_fit_range=False)
+                    threshold_roi, noise_roi, chi2_roi = au.fit_scurves_multithread(
+                        hist_scurve, scan_params, n_injections, optimize_fit_range=False, output_shape=roi_shape)
                 elif scan_id == 'autorange_threshold_scan':
                     scan_params = self.get_scan_param_values(scan_parameter='vcal_high') - self.get_scan_param_values(scan_parameter='vcal_med')
-                    self.threshold_map, self.noise_map, self.chi2_map = au.fit_scurves_multithread(hist_scurve, scan_params, n_injections, optimize_fit_range=False)
+                    threshold_roi, noise_roi, chi2_roi = au.fit_scurves_multithread(
+                        hist_scurve, scan_params, n_injections, optimize_fit_range=False, output_shape=roi_shape)
+
+                # Keep the legacy full-size output maps so downstream tools stay compatible.
+                self.threshold_map = np.full((self.columns, self.rows), -1.0, dtype=threshold_roi.dtype)
+                self.noise_map = np.full((self.columns, self.rows), -1.0, dtype=noise_roi.dtype)
+                self.chi2_map = np.zeros((self.columns, self.rows), dtype=chi2_roi.dtype)
+                self.threshold_map[start_column:stop_column, start_row:stop_row] = threshold_roi
+                self.noise_map[start_column:stop_column, start_row:stop_row] = noise_roi
+                self.chi2_map[start_column:stop_column, start_row:stop_row] = chi2_roi
 
                 out_file.create_carray(out_file.root, name='ThresholdMap', title='Threshold Map', obj=self.threshold_map,
                                        filters=tb.Filters(complib='blosc', complevel=5, fletcher32=False))

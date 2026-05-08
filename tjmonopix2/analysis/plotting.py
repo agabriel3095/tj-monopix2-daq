@@ -1,9 +1,4 @@
-#
-# ------------------------------------------------------------
-# Copyright (c) All rights reserved
-# SiLab, Institute of Physics, University of Bonn
-# ------------------------------------------------------------
-#
+"""Shared plotting module for both online scans and offline plotting."""
 
 import os
 import copy
@@ -46,9 +41,23 @@ DACS = {'TJMONOPIX2': ['IBIAS', 'ITHR',
                        'VCASC', 'VCLIP', ]
         }
 
+SOURCE_LIKE_SCANS = {'source_scan', 'ext_trigger_scan', 'noise_occupancy_scan'}
+TOT_LIKE_SCANS = {'analog_scan', 'threshold_scan', 'global_threshold_tuning', 'source_scan', 'ext_trigger_scan', 'calibrate_tot', 'noise_occupancy_scan'}
+THRESHOLD_LIKE_SCANS = {'threshold_scan', 'calibrate_tot'}
+
 
 class Plotting(object):
-    def __init__(self, analyzed_data_file, pdf_file=None, level='preliminary', mask_noisy_pixels=False, internal=False, save_single_pdf=False, save_png=False):
+    """Create plots from an interpreted HDF5 file.
+
+    Compared to the legacy plotting module, this version adds:
+    - named plot selection
+    - optional axis-range overrides
+    - optional progress display
+    - optional Telegram notifications
+    - lazy dataset loading for heavy arrays
+    """
+
+    def __init__(self, analyzed_data_file, pdf_file=None, level='preliminary', mask_noisy_pixels=False, internal=False, save_single_pdf=False, save_png=False, notify=True, show_progress=True, axis_ranges=None, create_output=True, map_split_config=None, map_output_config=None):
         self.log = logger.setup_derived_logger('Plotting')
 
         self.plot_cnt = 0
@@ -61,13 +70,21 @@ class Plotting(object):
         self.skip_plotting = False
         self.cb_side = False
         self._module_type = None
+        self.notify = notify
+        self.show_progress = show_progress
+        self.axis_ranges = axis_ranges or {}
+        self.create_output = create_output
+        self._active_plot_id = None
+        self.map_split_config = map_split_config or {}
+        self._scan_area_tile_specs_cache = {}
+        self.map_output_config = map_output_config or {'full_matrix': False, 'scan_area': True}
 
         if pdf_file is None:
             self.filename = '.'.join(
                 analyzed_data_file.split('.')[:-1]) + '.pdf'
         else:
             self.filename = pdf_file
-        self.out_file = PdfPages(self.filename)
+        self.out_file = PdfPages(self.filename) if self.create_output else None
 
         try:
             if isinstance(analyzed_data_file, str):
@@ -81,6 +98,7 @@ class Plotting(object):
             self.skip_plotting = True
             return
 
+        self.root = root
         self.scan_config = au.ConfigDict(root.configuration_in.scan.scan_config[:])
         self.run_config = au.ConfigDict(root.configuration_in.scan.run_config[:])
         self.chip_settings = au.ConfigDict(root.configuration_in.chip.settings[:])
@@ -94,11 +112,17 @@ class Plotting(object):
             self.scan_params = None
 
         self.registers = au.ConfigDict(root.configuration_in.chip.registers[:])
+        self.start_column = int(self.scan_config.get('start_column', 0))
+        self.stop_column = int(self.scan_config.get('stop_column', self.cols))
+        self.start_row = int(self.scan_config.get('start_row', 0))
+        self.stop_row = int(self.scan_config.get('stop_row', self.rows))
+        self.roi_cols = slice(self.start_column, self.stop_column)
+        self.roi_rows = slice(self.start_row, self.stop_row)
 
         if self.run_config['scan_id']:  # TODO: define 'usual' scans
             self.enable_mask = self._mask_disabled_pixels(root.configuration_in.chip.use_pixel[:], self.scan_config)
             self.n_enabled_pixels = len(self.enable_mask[~self.enable_mask])
-            self.tdac_mask = root.configuration_in.chip.masks.tdac[:]
+            self.tdac_node = root.configuration_in.chip.masks.tdac
 
         # self.calibration = {e[0].decode('utf-8'): float(e[1].decode('utf-8')) for e in root.configuration_in.chip.calibration[:]}
 
@@ -120,17 +144,17 @@ class Plotting(object):
             self.HistTdcStatus = root.HistTdcStatus[:]
         except tb.NoSuchNodeError:
             self.HistTdcStatus = None
-        self.HistOcc = root.HistOcc[:]
+        self.HistOcc = root.HistOcc
         self.HistTot = root.HistTot
+        self.n_failed_scurves = 0
         if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot', 'fast_threshold_scan', 'in_time_threshold_scan', 'autorange_threshold_scan', 'crosstalk_scan']:
-            self.ThresholdMap = root.ThresholdMap[:, :]
-            self.Chi2Map = root.Chi2Map[:, :]
-            self.Chi2Sel = (self.Chi2Map > 0) & (self.Chi2Map < SCURVE_CHI2_UPPER_LIMIT) & (~self.enable_mask)
-            self.n_failed_scurves = self.n_enabled_pixels - len(self.Chi2Map[self.Chi2Sel])
-            self.NoiseMap = root.NoiseMap[:]
+            self.ThresholdMap = root.ThresholdMap
+            self.Chi2Map = root.Chi2Map
+            self.NoiseMap = root.NoiseMap
+            self.n_failed_scurves = self._n_failed_scurves(full=True)
 
         if self.mask_noisy_pixels:
-            noisy_pixels = np.where(self.HistOcc > self.mask_noisy_pixels)
+            noisy_pixels = np.where(self._hist_occ_sum(full=True) > self.mask_noisy_pixels)
             for i in range(len(noisy_pixels[0])):
                 self.log.warning('Disabling noisy pixel ({0}, {1})'.format(noisy_pixels[0][i], noisy_pixels[1][i]))
                 self.enable_mask[noisy_pixels[0][i], noisy_pixels[1][i]] = True
@@ -189,11 +213,6 @@ class Plotting(object):
         except Exception:
             self.monitoring_group = None
 
-        try:
-            in_file.close()
-        except Exception:
-            pass
-
     def __enter__(self):
         return self
 
@@ -204,7 +223,115 @@ class Plotting(object):
             shutil.copyfile(self.filename, os.path.join(os.path.split(self.filename)[0], 'last_scan.pdf'))
         if getattr(self, 'in_file', None) is not None:
             self.in_file.close()
-        telegram_bot.send_message_scan(self.run_config, self.filename)
+        if self.notify:
+            telegram_bot.send_message_scan(self.run_config, self.filename)
+
+    def _full_matrix_required(self):
+        """Return whether full-matrix maps are requested."""
+        return self.map_output_config.get('full_matrix', True)
+
+    def _scan_area_only_mode(self):
+        """Return whether offline plotting only needs scan-area maps."""
+        return (not self._full_matrix_required()) and self._show_scan_area_maps()
+
+    def _read_matrix_node(self, node, full=True):
+        """Read a 2D matrix node fully or only in the configured scan area."""
+        if full:
+            return node[:, :]
+        return node[self.roi_cols, self.roi_rows]
+
+    def _roi_mask(self):
+        """Return the enable mask restricted to the scan area."""
+        return self.enable_mask[self.roi_cols, self.roi_rows]
+
+    def _read_tdac_mask(self, full=True):
+        """Read the TDAC mask fully or only in the scan area."""
+        return self._read_matrix_node(self.tdac_node, full=full)
+
+    def _read_chi2_map(self, full=True):
+        """Read the Chi2 map fully or only in the scan area."""
+        return self._read_matrix_node(self.Chi2Map, full=full)
+
+    def _read_threshold_map(self, full=True):
+        """Read the threshold map fully or only in the scan area."""
+        return self._read_matrix_node(self.ThresholdMap, full=full)
+
+    def _read_noise_map(self, full=True):
+        """Read the noise map fully or only in the scan area."""
+        return self._read_matrix_node(self.NoiseMap, full=full)
+
+    def _hist_occ_sum(self, full=True):
+        """Return occupancy summed over scan parameter, fully or in the scan area."""
+        if full:
+            return self.HistOcc[:].sum(axis=2)
+        return self.HistOcc[self.roi_cols, self.roi_rows, :].sum(axis=2)
+
+    def _iter_hist_occ_chunks(self, full=True, chunk_cols=32):
+        """Yield HistOcc chunks together with the matching enable-mask chunk."""
+        col_start = 0 if full else self.start_column
+        col_stop = self.cols if full else self.stop_column
+        row_slice = slice(0, self.rows) if full else self.roi_rows
+        mask = self.enable_mask if full else self._roi_mask()
+
+        for chunk_start in range(col_start, col_stop, chunk_cols):
+            chunk_stop = min(chunk_start + chunk_cols, col_stop)
+            data = self.HistOcc[chunk_start:chunk_stop, row_slice, :]
+            if full:
+                mask_chunk = mask[chunk_start:chunk_stop, :]
+            else:
+                local_start = chunk_start - self.start_column
+                local_stop = chunk_stop - self.start_column
+                mask_chunk = mask[local_start:local_stop, :]
+            yield data, mask_chunk
+
+    def _threshold_selection(self, full=True):
+        """Return the valid-threshold selection mask."""
+        chi2_map = self._read_chi2_map(full=full)
+        enable_mask = self.enable_mask if full else self._roi_mask()
+        return (chi2_map > 0) & (chi2_map < SCURVE_CHI2_UPPER_LIMIT) & (~enable_mask)
+
+    def _n_failed_scurves(self, full=True):
+        """Return the number of failed S-curve fits for the chosen region."""
+        chi2_sel = self._threshold_selection(full=full)
+        enabled_pixels = self.n_enabled_pixels if full else int(np.count_nonzero(~self._roi_mask()))
+        return enabled_pixels - int(np.count_nonzero(chi2_sel))
+
+    def _build_scurve_histogram(self, full=True):
+        """Build the S-curve summary histogram chunk by chunk."""
+        n_injections = self.scan_config.get('n_injections', 100)
+        y_max = int(n_injections * 1.5)
+        max_occ = y_max + 2
+        if self.run_config['scan_id'] == 'autorange_threshold_scan':
+            observed_max = 0
+            for chunk, mask_chunk in self._iter_hist_occ_chunks(full=full):
+                enabled_mask = ~mask_chunk.reshape(-1)
+                if not np.any(enabled_mask):
+                    continue
+                flat_chunk = chunk.reshape(-1, chunk.shape[2])
+                observed_max = max(observed_max, int(np.max(flat_chunk[enabled_mask])))
+            max_occ = int(min(observed_max + 5, y_max + 2))
+
+        param_count = self.HistOcc.shape[2]
+        hist = np.zeros((param_count, max_occ), dtype=np.uint32)
+        n_noisy_pixels = 0
+        enabled_pixels_count = self.n_enabled_pixels if full else int(np.count_nonzero(~self._roi_mask()))
+
+        for chunk, mask_chunk in self._iter_hist_occ_chunks(full=full):
+            enabled_mask = ~mask_chunk.reshape(-1)
+            if not np.any(enabled_mask):
+                continue
+            flat_chunk = chunk.reshape(-1, param_count)
+            enabled_chunk = flat_chunk[enabled_mask]
+            n_noisy_pixels += int(np.count_nonzero(np.any(enabled_chunk > y_max, axis=1)))
+            clipped_chunk = np.clip(enabled_chunk, 0, max_occ - 1)
+
+            for param in range(param_count):
+                values = clipped_chunk[:, param]
+                if self.run_config['scan_id'] == 'autorange_threshold_scan':
+                    values = values.astype(int, copy=False)
+                hist[param] += np.bincount(values, minlength=max_occ).astype(hist.dtype, copy=False)
+
+        return hist, y_max, n_noisy_pixels, enabled_pixels_count
 
     def _sum_hist_tot(self):
         '''Return the full ToT histogram without loading HistTot completely.'''
@@ -275,6 +402,53 @@ class Plotting(object):
         finally:
             self.plot_box_bounds = old_plot_box_bounds
 
+    def _plot_scan_area_map_tiles(self, hist, suffix, title, plot_kind='occupancy', **kwargs):
+        """Plot optional zoom tiles inside the scanned area for 2D maps."""
+        tile_specs = self._get_scan_area_tile_specs()
+        if not tile_specs:
+            return
+
+        if plot_kind == 'occupancy_with_projections':
+            renderer = self._plot_fancy_occupancy
+            kwargs = dict(kwargs)
+            allowed_keys = {'z_label', 'z_min', 'z_max', 'log_z', 'norm_projection', 'show_sum', 'centered_ticks'}
+            kwargs = {key: value for key, value in kwargs.items() if key in allowed_keys}
+            kwargs.setdefault('log_z', False)
+        else:
+            renderer = self._plot_occupancy if plot_kind == 'occupancy' else self._plot_fancy_occupancy
+            if plot_kind == 'occupancy':
+                kwargs = dict(kwargs)
+                kwargs.setdefault('aspect', 'auto')
+        old_plot_box_bounds = self.plot_box_bounds
+        try:
+            roi_local = hist.shape == (self.stop_row - self.start_row, self.stop_column - self.start_column)
+            for tile in tile_specs:
+                if roi_local:
+                    row_start = tile['row_start'] - self.start_row
+                    row_stop = tile['row_stop'] - self.start_row
+                    col_start = tile['col_start'] - self.start_column
+                    col_stop = tile['col_stop'] - self.start_column
+                else:
+                    row_start = tile['row_start']
+                    row_stop = tile['row_stop']
+                    col_start = tile['col_start']
+                    col_stop = tile['col_stop']
+                hist_tile = hist[row_start:row_stop, col_start:col_stop]
+                self.plot_box_bounds = [
+                    tile['col_start'] + 0.5,
+                    tile['col_stop'] + 0.5,
+                    tile['row_stop'] + 0.5,
+                    tile['row_start'] + 0.5,
+                ]
+                renderer(
+                    hist=hist_tile,
+                    suffix=f"{suffix}_r{tile['row_index'] + 1:02d}_c{tile['col_index'] + 1:02d}",
+                    title=f"{title} zoom r{tile['row_index'] + 1}/{tile['row_splits']} c{tile['col_index'] + 1}/{tile['col_splits']}",
+                    **kwargs,
+                )
+        finally:
+            self.plot_box_bounds = old_plot_box_bounds
+
     def _plot_scan_area_fancy_map(self, hist, suffix, title, **kwargs):
         '''Plot a cropped scan-area copy for maps with projections.'''
         if not all(k in self.scan_config for k in ('start_column', 'stop_column', 'start_row', 'stop_row')):
@@ -299,6 +473,83 @@ class Plotting(object):
                                        **kwargs)
         finally:
             self.plot_box_bounds = old_plot_box_bounds
+
+    def _get_current_map_split_config(self):
+        """Return the split configuration for the active plot, if any."""
+        if not self.map_split_config or self._active_plot_id is None:
+            return None
+        config = self.map_split_config.get(self._active_plot_id)
+        if not config:
+            return None
+        return config
+
+    def _get_scan_area_tile_specs(self):
+        """Return valid scan-area tile definitions for optional zoomed map plots."""
+        split_config = self._get_current_map_split_config()
+        cache_key = self._active_plot_id
+        if cache_key in self._scan_area_tile_specs_cache:
+            return self._scan_area_tile_specs_cache[cache_key]
+        if not split_config:
+            self._scan_area_tile_specs_cache[cache_key] = []
+            return self._scan_area_tile_specs_cache[cache_key]
+        if not all(k in self.scan_config for k in ('start_column', 'stop_column', 'start_row', 'stop_row')):
+            self._scan_area_tile_specs_cache[cache_key] = []
+            return self._scan_area_tile_specs_cache[cache_key]
+
+        row_splits = int(split_config.get('rows', 1))
+        col_splits = int(split_config.get('cols', 1))
+        if row_splits < 1 or col_splits < 1:
+            self.log.warning('Ignoring invalid map split configuration: rows and cols must be >= 1.')
+            self._scan_area_tile_specs_cache[cache_key] = []
+            return self._scan_area_tile_specs_cache[cache_key]
+        if row_splits == 1 and col_splits == 1:
+            self._scan_area_tile_specs_cache[cache_key] = []
+            return self._scan_area_tile_specs_cache[cache_key]
+
+        start_column = int(self.scan_config['start_column'])
+        stop_column = int(self.scan_config['stop_column'])
+        start_row = int(self.scan_config['start_row'])
+        stop_row = int(self.scan_config['stop_row'])
+        scan_cols = stop_column - start_column
+        scan_rows = stop_row - start_row
+
+        valid_cols = True
+        if col_splits > 1:
+            valid_cols = (scan_cols % col_splits == 0) and (scan_cols // col_splits > 2)
+
+        valid_rows = True
+        if row_splits > 1:
+            valid_rows = (scan_rows % row_splits == 0) and (scan_rows // row_splits > 2)
+        if not (valid_cols and valid_rows):
+            self.log.warning(
+                'Skipping zoomed map tiles for %s: scan area %d x %d is not compatible with splits rows=%d cols=%d. '
+                'Each dimension with splits > 1 must divide the scan area exactly and leave more than 2 pixels per tile.',
+                self._active_plot_id, scan_rows, scan_cols, row_splits, col_splits
+            )
+            self._scan_area_tile_specs_cache[cache_key] = []
+            return self._scan_area_tile_specs_cache[cache_key]
+
+        col_step = scan_cols // col_splits
+        row_step = scan_rows // row_splits
+        tiles = []
+        for row_index in range(row_splits):
+            row_start = start_row + row_index * row_step
+            row_stop = row_start + row_step
+            for col_index in range(col_splits):
+                col_start = start_column + col_index * col_step
+                col_stop = col_start + col_step
+                tiles.append({
+                    'row_index': row_index,
+                    'col_index': col_index,
+                    'row_start': row_start,
+                    'row_stop': row_stop,
+                    'col_start': col_start,
+                    'col_stop': col_stop,
+                    'row_splits': row_splits,
+                    'col_splits': col_splits,
+                })
+        self._scan_area_tile_specs_cache[cache_key] = tiles
+        return self._scan_area_tile_specs_cache[cache_key]
 
     def _set_pixel_axis_ticks(self, ax):
         def get_ticks(low, high):
@@ -382,63 +633,101 @@ class Plotting(object):
             z_min = 0
         return z_min, z_max
 
+    def _show_full_matrix_maps(self):
+        """Return whether full-matrix maps should be produced."""
+        return self.map_output_config.get('full_matrix', True)
+
+    def _show_scan_area_maps(self):
+        """Return whether scan-area maps should be produced."""
+        return self.map_output_config.get('scan_area', True)
+
+    def set_axis_ranges(self, axis_ranges):
+        """Update per-plot axis overrides."""
+        self.axis_ranges = axis_ranges or {}
+
+    def get_available_plot_specs(self):
+        """Return the named plot steps available for the current file."""
+        specs = []
+        scan_id = self.run_config['scan_id']
+        if scan_id in ['dac_linearity_scan', 'adc_tuning']:
+            specs.extend([
+                ('parameter_page', 'Parameter page', self.create_parameter_page),
+                ('dac_linearity', 'DAC linearity', self.create_dac_linearity_plot),
+            ])
+            return specs
+
+        specs.append(('parameter_page', 'Parameter page', self.create_parameter_page))
+        specs.append(('occupancy_map', 'Occupancy map', self.create_occupancy_map))
+        if scan_id in SOURCE_LIKE_SCANS:
+            specs.append(('fancy_occupancy', 'Fancy occupancy', self.create_fancy_occupancy))
+        if scan_id in TOT_LIKE_SCANS:
+            specs.extend([
+                ('hit_pix', 'Hits per pixel', self.create_hit_pix_plot),
+                ('tdac_plot', 'TDAC distribution', self.create_tdac_plot),
+                ('tdac_map', 'TDAC map', self.create_tdac_map),
+                ('tot_plot', 'ToT distribution', self.create_tot_plot),
+                ('tot_map', 'ToT map', self.create_tot_map),
+            ])
+        if scan_id in THRESHOLD_LIKE_SCANS:
+            specs.extend([
+                ('tot_hist', 'ToT histogram', self.create_tot_hist),
+                ('scurves', 'S-curves', self.create_scurves_plot),
+                ('threshold_plot', 'Threshold distribution', self.create_threshold_plot),
+                ('stacked_threshold', 'Stacked threshold', self.create_stacked_threshold_plot),
+                ('threshold_map', 'Threshold map', self.create_threshold_map),
+                ('noise_plot', 'Noise distribution', self.create_noise_plot),
+                ('noise_map', 'Noise map', self.create_noise_map),
+            ])
+        if scan_id == 'global_threshold_tuning':
+            specs.extend([
+                ('scurves', 'S-curves', self.create_scurves_plot),
+                ('threshold_plot', 'Threshold distribution', self.create_threshold_plot),
+                ('threshold_map', 'Threshold map', self.create_threshold_map),
+                ('noise_plot', 'Noise distribution', self.create_noise_plot),
+                ('noise_map', 'Noise map', self.create_noise_map),
+            ])
+        if self.clustered:
+            specs.extend([
+                ('cluster_tot', 'Cluster ToT', self.create_cluster_tot_plot),
+                ('cluster_shape', 'Cluster shape', self.create_cluster_shape_plot),
+                ('cluster_size', 'Cluster size', self.create_cluster_size_plot),
+            ])
+        if self.HistTdcStatus is not None:
+            specs.append(('tdc_status', 'TDC status', self.create_tdc_status_plot))
+        if self._monitoring_enabled_in_pdf():
+            specs.extend([
+                ('monitoring_summary', 'Monitoring summary', self.create_monitoring_summary_table),
+                ('monitoring_main', 'Monitoring main page', self.create_monitoring_main_page),
+            ])
+        return specs
+
+    def list_available_plots(self):
+        """Return the available plot ids in execution order."""
+        return [plot_id for plot_id, _, _ in self.get_available_plot_specs()]
+
+    def list_available_plot_details(self):
+        """Return available plot ids together with user-facing labels."""
+        return [(plot_id, label) for plot_id, label, _ in self.get_available_plot_specs()]
+
+    def create_selected_plots(self, selected_plots=None):
+        """Run all available plots or only the selected named plots."""
+        if self.skip_plotting:
+            return
+        specs = self.get_available_plot_specs()
+        if selected_plots is not None:
+            requested = set(selected_plots)
+            unknown = sorted(requested - {plot_id for plot_id, _, _ in specs})
+            if unknown:
+                raise ValueError(f'Unknown plot ids: {", ".join(unknown)}')
+            specs = [spec for spec in specs if spec[0] in requested]
+        self._run_named_plot_steps(specs, description='Plotting')
+
     ''' User callable plotting functions '''
     def create_standard_plots(self):
         if self.skip_plotting:
             return
         self.log.info('Creating selected plots...')
-        steps = []
-        if self.run_config['scan_id'] in ['dac_linearity_scan', 'adc_tuning']:
-            steps.extend([
-                ('Parameter page', self.create_parameter_page),
-                ('DAC linearity', self.create_dac_linearity_plot),
-            ])
-        else:
-            steps.append(('Parameter page', self.create_parameter_page))
-            if self._monitoring_enabled_in_pdf():
-                steps.extend([
-                    ('Monitoring summary', self.create_monitoring_summary_table),
-                    ('Monitoring main page', self.create_monitoring_main_page),
-                ])
-            steps.append(('Occupancy map', self.create_occupancy_map))
-            if self.run_config['scan_id'] in ['source_scan', 'ext_trigger_scan', 'noise_occupancy_scan']:
-                steps.append(('Fancy occupancy', self.create_fancy_occupancy))
-            if self.run_config['scan_id'] in ['analog_scan', 'threshold_scan', 'global_threshold_tuning', 'source_scan', 'ext_trigger_scan', 'calibrate_tot', 'noise_occupancy_scan']:
-                steps.extend([
-                    ('Hits per pixel', self.create_hit_pix_plot),
-                    ('TDAC distribution', self.create_tdac_plot),
-                    ('TDAC map', self.create_tdac_map),
-                    ('ToT distribution', self.create_tot_plot),
-                    ('ToT map', self.create_tot_map),
-                ])
-            if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot']:
-                steps.extend([
-                    ('ToT histogram', self.create_tot_hist),
-                    ('S-curves', self.create_scurves_plot),
-                    ('Threshold distribution', self.create_threshold_plot),
-                    ('Stacked threshold', self.create_stacked_threshold_plot),
-                    ('Threshold map', self.create_threshold_map),
-                    ('Noise distribution', self.create_noise_plot),
-                    ('Noise map', self.create_noise_map),
-                ])
-            if self.run_config['scan_id'] == 'global_threshold_tuning':
-                steps.extend([
-                    ('S-curves', self.create_scurves_plot),
-                    ('Threshold distribution', self.create_threshold_plot),
-                    ('Threshold map', self.create_threshold_map),
-                    ('Noise distribution', self.create_noise_plot),
-                    ('Noise map', self.create_noise_map),
-                ])
-            if self.clustered:
-                steps.extend([
-                    ('Cluster ToT', self.create_cluster_tot_plot),
-                    ('Cluster shape', self.create_cluster_shape_plot),
-                    ('Cluster size', self.create_cluster_size_plot),
-                ])
-            if self.HistTdcStatus is not None:
-                steps.append(('TDC status', self.create_tdc_status_plot))
-
-        self._run_plot_steps(steps, description='Plotting')
+        self.create_selected_plots()
 
     def create_parameter_page(self):
         try:
@@ -447,29 +736,30 @@ class Plotting(object):
             self.log.error('Could not create parameter page!')
 
     def create_tuning_plots(self, include_tdac=True):
+        """Create a smaller tuning-oriented plot set."""
         if self.skip_plotting:
             return
         self.log.info('Creating tuning plots...')
-        steps = [('Parameter page', self.create_parameter_page)]
-        if self._monitoring_enabled_in_pdf():
-            steps.extend([
-                ('Monitoring summary', self.create_monitoring_summary_table),
-                ('Monitoring main page', self.create_monitoring_main_page),
-            ])
+        steps = [('parameter_page', 'Parameter page', self.create_parameter_page)]
         steps.extend([
-            ('Occupancy map', self.create_occupancy_map),
-            ('Hits per pixel', self.create_hit_pix_plot),
+            ('occupancy_map', 'Occupancy map', self.create_occupancy_map),
+            ('hit_pix', 'Hits per pixel', self.create_hit_pix_plot),
         ])
         if include_tdac:
             steps.extend([
-                ('TDAC distribution', self.create_tdac_plot),
-                ('TDAC map', self.create_tdac_map),
+                ('tdac_plot', 'TDAC distribution', self.create_tdac_plot),
+                ('tdac_map', 'TDAC map', self.create_tdac_map),
             ])
         steps.extend([
-            ('ToT distribution', self.create_tot_plot),
-            ('ToT map', self.create_tot_map),
+            ('tot_plot', 'ToT distribution', self.create_tot_plot),
+            ('tot_map', 'ToT map', self.create_tot_map),
         ])
-        self._run_plot_steps(steps, description='Tuning plots')
+        if self._monitoring_enabled_in_pdf():
+            steps.extend([
+                ('monitoring_summary', 'Monitoring summary', self.create_monitoring_summary_table),
+                ('monitoring_main', 'Monitoring main page', self.create_monitoring_main_page),
+            ])
+        self._run_named_plot_steps(steps, description='Tuning plots')
 
     def _monitoring_enabled_in_pdf(self):
         if not self.monitoring_group:
@@ -478,14 +768,56 @@ class Plotting(object):
             return True
         return self.monitoring_cfg.get('include_in_pdf', True)
 
-    def _run_plot_steps(self, steps, description='Plotting'):
+    def _run_named_plot_steps(self, steps, description='Plotting'):
+        """Run a list of named plot callables with optional progress output."""
         if not steps:
             return
+        if not self.show_progress:
+            for plot_id, _, func in steps:
+                self._active_plot_id = plot_id
+                try:
+                    func()
+                finally:
+                    self._active_plot_id = None
+            return
         with tqdm(total=len(steps), desc=description, unit='plot') as pbar:
-            for label, func in steps:
+            for plot_id, label, func in steps:
                 pbar.set_postfix_str(label)
-                func()
+                self._active_plot_id = plot_id
+                try:
+                    func()
+                finally:
+                    self._active_plot_id = None
                 pbar.update(1)
+
+    def _get_axis_override(self, suffix):
+        """Return the axis override dict for a given plot suffix."""
+        keys = []
+        if self._active_plot_id is not None:
+            keys.append(self._active_plot_id)
+        if suffix is not None:
+            keys.append(suffix)
+
+        override = {}
+        for key in keys:
+            if key in self.axis_ranges:
+                override.update(self.axis_ranges[key])
+        return override
+
+    def _apply_axis_override(self, ax, suffix, allow_x=True, allow_y=True):
+        """Apply x/y range overrides after a plot is created."""
+        override = self._get_axis_override(suffix)
+        if allow_x and 'x' in override:
+            ax.set_xlim(*override['x'])
+        if allow_y and 'y' in override:
+            ax.set_ylim(*override['y'])
+
+    def _apply_map_range_override(self, suffix, z_min, z_max):
+        """Apply z-range overrides before drawing a map."""
+        override = self._get_axis_override(suffix)
+        if 'z' in override:
+            z_min, z_max = override['z']
+        return z_min, z_max
 
     def _sanitize_distribution_data(self, data):
         data = np.ma.masked_invalid(np.ma.array(data, copy=False))
@@ -747,26 +1079,50 @@ class Plotting(object):
                 title = 'Occupancy'
                 z_max = None
 
-            hist = np.ma.masked_array(self.HistOcc[:].sum(axis=2), self.enable_mask).T
+            full = self._full_matrix_required()
+            hist = np.ma.masked_array(self._hist_occ_sum(full=full), self.enable_mask if full else self._roi_mask()).T
             z_min, z_max = self._resolve_map_z_limits(hist, z_max=z_max)
-            self._plot_occupancy(hist=hist,
-                                 z_min=z_min,
-                                 z_max=z_max,
-                                 suffix='occupancy',
-                                 title=title,
-                                 colorbar_scientific=True)
-            self._plot_scan_area_map(hist=hist,
+            if self._show_full_matrix_maps():
+                self._plot_occupancy(hist=hist,
                                      z_min=z_min,
                                      z_max=z_max,
-                                     suffix='occupancy_scan_area',
-                                     title=title + ' scan area',
+                                     suffix='occupancy',
+                                     title=title,
                                      colorbar_scientific=True)
+            if self._show_scan_area_maps():
+                if full:
+                    self._plot_scan_area_map(hist=hist,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             suffix='occupancy_scan_area',
+                                             title=title + ' scan area',
+                                             colorbar_scientific=True)
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   suffix='occupancy_scan_area_zoom',
+                                                   title=title + ' scan area',
+                                                   plot_kind='occupancy_with_projections')
+                else:
+                    self._plot_occupancy(hist=hist,
+                                         z_min=z_min,
+                                         z_max=z_max,
+                                         suffix='occupancy_scan_area',
+                                         title=title + ' scan area',
+                                         colorbar_scientific=True,
+                                         aspect='auto')
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   suffix='occupancy_scan_area_zoom',
+                                                   title=title + ' scan area',
+                                                   plot_kind='occupancy_with_projections')
         except Exception:
             self.log.error('Could not create occupancy map!')
 
     def create_fancy_occupancy(self):
         try:
-            self._plot_fancy_occupancy(hist=np.ma.masked_array(self.HistOcc[:].sum(axis=2), self.enable_mask).T)
+            self._plot_fancy_occupancy(hist=np.ma.masked_array(self._hist_occ_sum(full=True), self.enable_mask).T)
         except Exception:
             self.log.error('Could not create fancy occupancy plot!')
 
@@ -774,11 +1130,16 @@ class Plotting(object):
         ''' Create 1D tot plot '''
         try:
             hist_tot = self._sum_hist_tot()
+            nonzero_bins = np.flatnonzero(hist_tot)
+            if nonzero_bins.size == 0:
+                plot_stop = min(5, self.HistTot.shape[3])
+            else:
+                plot_stop = min(int(nonzero_bins[-1]) + 6, self.HistTot.shape[3])
             title = ('Time-over-Threshold distribution ($\\Sigma$ = {0:1.0f})'.format(np.sum(hist_tot)))
             self._plot_1d_hist(hist=hist_tot,
                                title=title,
                                log_y=False,
-                               plot_range=range(0, self.HistTot.shape[3]),
+                               plot_range=range(0, plot_stop),
                             #    plot_range=range(0, 40),
                                x_axis_title='ToT code',
                                y_axis_title='# of hits',
@@ -798,22 +1159,32 @@ class Plotting(object):
             z_min = 0
             z_max = int(np.ceil(np.nanmax(mean_tot[total > 0])))
             hist = np.ma.masked_array(mean_tot, self.enable_mask).T
-            self._plot_occupancy(hist=hist,
-                                 title='Average ToT map',
-                                 z_label='ToT code',
-                                 z_min=z_min,
-                                 z_max=z_max,
-                                 suffix='tot_map',
-                                 colorbar_integer=True,
-                                 extend_upper_bound=False)
-            self._plot_scan_area_map(hist=hist,
-                                     title='Average ToT map scan area',
+            if self._show_full_matrix_maps():
+                self._plot_occupancy(hist=hist,
+                                     title='Average ToT map',
                                      z_label='ToT code',
                                      z_min=z_min,
                                      z_max=z_max,
-                                     suffix='tot_map_scan_area',
+                                     suffix='tot_map',
                                      colorbar_integer=True,
                                      extend_upper_bound=False)
+            if self._show_scan_area_maps():
+                self._plot_scan_area_map(hist=hist,
+                                         title='Average ToT map scan area',
+                                         z_label='ToT code',
+                                         z_min=z_min,
+                                         z_max=z_max,
+                                         suffix='tot_map_scan_area',
+                                         colorbar_integer=True,
+                                         extend_upper_bound=False)
+            self._plot_scan_area_map_tiles(hist=hist,
+                                           title='Average ToT map scan area',
+                                           z_label='ToT code',
+                                           z_min=z_min,
+                                           z_max=z_max,
+                                           suffix='tot_map_scan_area_zoom',
+                                           extend_upper_bound=False,
+                                           plot_kind='occupancy_with_projections')
         except Exception:
             self.log.error('Could not create average ToT map!')
 
@@ -846,20 +1217,25 @@ class Plotting(object):
                 scan_parameter_range = self.scan_parameter_range
                 plot_electron_axis = self.plot_electron_axis
 
-            params = [{'scurves': self.HistOcc[:].ravel().reshape((self.rows * self.cols, -1)).T,
-                       'scan_parameters': scan_parameter_range,
-                       'electron_axis': plot_electron_axis,
-                       'scan_parameter_name': scan_parameter_name}]
-
-            for param in params:
-                self._plot_scurves(**param)
+            full = not self._scan_area_only_mode()
+            hist, y_max, n_noisy_pixels, enabled_pixels_count = self._build_scurve_histogram(full=full)
+            self._plot_scurves_hist(hist=hist,
+                                    y_max=y_max,
+                                    n_noisy_pixels=n_noisy_pixels,
+                                    enabled_pixels_count=enabled_pixels_count,
+                                    failed_fit_count=self._n_failed_scurves(full=full),
+                                    scan_parameters=scan_parameter_range,
+                                    electron_axis=plot_electron_axis,
+                                    scan_parameter_name=scan_parameter_name)
         except Exception as e:
             self.log.error('Could not create scurve plot! ({0})'.format(e))
 
     def create_threshold_plot(self, logscale=False, scan_parameter_name='Scan parameter'):
         try:
             title = 'Threshold distribution for enabled pixels'
-            threshold_data = self.ThresholdMap[self.Chi2Sel].T
+            threshold_map = self._read_threshold_map(full=False)
+            threshold_sel = self._threshold_selection(full=False)
+            threshold_data = threshold_map[threshold_sel].T
             if self.run_config['scan_id'] == 'injection_delay_scan':
                 scan_parameter_name = 'Finedelay [LSB]'
                 plot_electron_axis = False
@@ -882,6 +1258,7 @@ class Plotting(object):
                                     log_y=logscale,
                                     y_axis_title='# of pixels',
                                     print_failed_fits=True,
+                                    failed_fit_count=self._n_failed_scurves(full=False),
                                     suffix='threshold_distribution')
         except Exception as e:
             self.log.error('Could not create threshold plot! ({0})'.format(e))
@@ -905,7 +1282,9 @@ class Plotting(object):
     def create_stacked_threshold_plot(self, scan_parameter_name='Scan parameter'):
         try:
             min_tdac, max_tdac, range_tdac, _ = (1, 7, 7, 1)
-            threshold_data = self.ThresholdMap[self.Chi2Sel].T
+            threshold_map = self._read_threshold_map(full=False)
+            threshold_sel = self._threshold_selection(full=False)
+            threshold_data = threshold_map[threshold_sel].T
 
             plot_range = self._threshold_distribution_range(threshold_data, margin=5)
             if self.run_config['scan_id'] == 'global_threshold_tuning':
@@ -916,13 +1295,14 @@ class Plotting(object):
                 plot_electron_axis = self.plot_electron_axis
 
             self._plot_stacked_threshold(data=threshold_data,
-                                         tdac_mask=self.tdac_mask[self.Chi2Sel].T,
+                                         tdac_mask=self._read_tdac_mask(full=False)[threshold_sel].T,
                                          plot_range=plot_range,
                                          electron_axis=plot_electron_axis,
                                          x_axis_title=scan_parameter_name,
                                          y_axis_title='# of pixels',
                                          title='Threshold distribution for enabled pixels',
                                          suffix='tdac_threshold_distribution',
+                                         failed_fit_count=self._n_failed_scurves(full=False),
                                          min_tdac=min(min_tdac, max_tdac),
                                          max_tdac=max(min_tdac, max_tdac),
                                          range_tdac=range_tdac, centered_ticks=True)
@@ -931,8 +1311,9 @@ class Plotting(object):
 
     def create_threshold_map(self):
         try:
-            mask = self.enable_mask.copy()
-            sel = self.Chi2Map[:] > 0.  # Mask not converged fits (chi2 = 0)
+            full = self._full_matrix_required()
+            mask = self.enable_mask.copy() if full else self._roi_mask().copy()
+            sel = self._read_chi2_map(full=full) > 0.  # Mask not converged fits (chi2 = 0)
             mask[~sel] = True
             if self.run_config['scan_id'] == 'injection_delay_scan':
                 plot_electron_axis = False
@@ -949,35 +1330,72 @@ class Plotting(object):
                 z_min = None
                 z_max = None
 
-            hist = np.ma.masked_array(self.ThresholdMap, mask).T
+            hist = np.ma.masked_array(self._read_threshold_map(full=full), mask).T
             z_min, z_max = self._resolve_map_z_limits(hist, z_min=z_min, z_max=z_max)
-            self._plot_occupancy(hist=hist,
-                                 electron_axis=plot_electron_axis,
-                                 z_label=z_label,
-                                 title=title,
-                                 use_electron_offset=use_electron_offset,
-                                 show_sum=False,
-                                 z_min=z_min,
-                                 z_max=z_max,
-                                 suffix='threshold_map',
-                                 colorbar_tick_count=6)
-            self._plot_scan_area_map(hist=hist,
+            if self._show_full_matrix_maps():
+                self._plot_occupancy(hist=hist,
                                      electron_axis=plot_electron_axis,
                                      z_label=z_label,
-                                     title=title + ' scan area',
+                                     title=title,
                                      use_electron_offset=use_electron_offset,
                                      show_sum=False,
                                      z_min=z_min,
                                      z_max=z_max,
-                                     suffix='threshold_map_scan_area',
+                                     suffix='threshold_map',
                                      colorbar_tick_count=6)
+            if self._show_scan_area_maps():
+                if full:
+                    self._plot_scan_area_map(hist=hist,
+                                             electron_axis=plot_electron_axis,
+                                             z_label=z_label,
+                                             title=title + ' scan area',
+                                             use_electron_offset=use_electron_offset,
+                                             show_sum=False,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             suffix='threshold_map_scan_area',
+                                             colorbar_tick_count=6)
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   electron_axis=plot_electron_axis,
+                                                   z_label=z_label,
+                                                   title=title + ' scan area',
+                                                   use_electron_offset=use_electron_offset,
+                                                   show_sum=False,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   suffix='threshold_map_scan_area_zoom',
+                                                   colorbar_tick_count=6,
+                                                   plot_kind='occupancy_with_projections')
+                else:
+                    self._plot_occupancy(hist=hist,
+                                         electron_axis=plot_electron_axis,
+                                         z_label=z_label,
+                                         title=title + ' scan area',
+                                         use_electron_offset=use_electron_offset,
+                                         show_sum=False,
+                                         z_min=z_min,
+                                         z_max=z_max,
+                                         suffix='threshold_map_scan_area',
+                                         colorbar_tick_count=6,
+                                         aspect='auto')
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   electron_axis=plot_electron_axis,
+                                                   z_label=z_label,
+                                                   title=title + ' scan area',
+                                                   use_electron_offset=use_electron_offset,
+                                                   show_sum=False,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   suffix='threshold_map_scan_area_zoom',
+                                                   colorbar_tick_count=6,
+                                                   plot_kind='occupancy_with_projections')
         except Exception:
             self.log.error('Could not create threshold map!')
 
     def create_noise_plot(self, logscale=False, scan_parameter_name='Scan parameter'):
         try:
-            mask = self.enable_mask.copy()
-            sel = self.Chi2Map[:] > 0.  # Mask not converged fits (chi2 = 0)
+            mask = self._roi_mask().copy()
+            sel = self._read_chi2_map(full=False) > 0.  # Mask not converged fits (chi2 = 0)
             mask[~sel] = True
 
             plot_range = None
@@ -991,7 +1409,7 @@ class Plotting(object):
                 scan_parameter_name = 'Finedelay [LSB]'
                 plot_electron_axis = False
 
-            self._plot_distribution(np.ma.masked_array(self.NoiseMap, mask).T,
+            self._plot_distribution(np.ma.masked_array(self._read_noise_map(full=False), mask).T,
                                     title='Noise distribution for enabled pixels',
                                     plot_range=plot_range,
                                     electron_axis=plot_electron_axis,
@@ -1000,14 +1418,16 @@ class Plotting(object):
                                     y_axis_title='# of pixels',
                                     log_y=logscale,
                                     print_failed_fits=True,
+                                    failed_fit_count=self._n_failed_scurves(full=False),
                                     suffix='noise_distribution')
         except Exception:
             self.log.error('Could not create noise plot!')
 
     def create_noise_map(self):
         try:
-            mask = self.enable_mask.copy()
-            sel = self.Chi2Map[:] > 0.  # Mask not converged fits (chi2 = 0)
+            full = self._full_matrix_required()
+            mask = self.enable_mask.copy() if full else self._roi_mask().copy()
+            sel = self._read_chi2_map(full=full) > 0.  # Mask not converged fits (chi2 = 0)
             mask[~sel] = True
             z_label = 'Noise'
             title = 'Noise'
@@ -1017,37 +1437,74 @@ class Plotting(object):
                 z_label = 'Finedelay [LSB]'
                 title = 'Injection Delay Noise'
                 plot_electron_axis = False
-            hist = np.ma.masked_array(self.NoiseMap, mask).T
+            hist = np.ma.masked_array(self._read_noise_map(full=full), mask).T
             z_min, z_max = self._resolve_map_z_limits(hist, z_max='median')
-            self._plot_occupancy(hist=hist,
-                                 electron_axis=plot_electron_axis,
-                                 use_electron_offset=False,
-                                 z_label=z_label,
-                                 z_min=z_min,
-                                 z_max=z_max,
-                                 title=title,
-                                 show_sum=False,
-                                 suffix='noise_map',
-                                 colorbar_tick_count=6)
-            self._plot_scan_area_map(hist=hist,
+            if self._show_full_matrix_maps():
+                self._plot_occupancy(hist=hist,
                                      electron_axis=plot_electron_axis,
                                      use_electron_offset=False,
                                      z_label=z_label,
                                      z_min=z_min,
                                      z_max=z_max,
-                                     title=title + ' scan area',
+                                     title=title,
                                      show_sum=False,
-                                     suffix='noise_map_scan_area',
+                                     suffix='noise_map',
                                      colorbar_tick_count=6)
+            if self._show_scan_area_maps():
+                if full:
+                    self._plot_scan_area_map(hist=hist,
+                                             electron_axis=plot_electron_axis,
+                                             use_electron_offset=False,
+                                             z_label=z_label,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             title=title + ' scan area',
+                                             show_sum=False,
+                                             suffix='noise_map_scan_area',
+                                             colorbar_tick_count=6)
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   electron_axis=plot_electron_axis,
+                                                   use_electron_offset=False,
+                                                   z_label=z_label,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   title=title + ' scan area',
+                                                   show_sum=False,
+                                                   suffix='noise_map_scan_area_zoom',
+                                                   colorbar_tick_count=6,
+                                                   plot_kind='occupancy_with_projections')
+                else:
+                    self._plot_occupancy(hist=hist,
+                                         electron_axis=plot_electron_axis,
+                                         use_electron_offset=False,
+                                         z_label=z_label,
+                                         z_min=z_min,
+                                         z_max=z_max,
+                                         title=title + ' scan area',
+                                         show_sum=False,
+                                         suffix='noise_map_scan_area',
+                                         colorbar_tick_count=6,
+                                         aspect='auto')
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   electron_axis=plot_electron_axis,
+                                                   use_electron_offset=False,
+                                                   z_label=z_label,
+                                                   z_min=z_min,
+                                                   z_max=z_max,
+                                                   title=title + ' scan area',
+                                                   show_sum=False,
+                                                   suffix='noise_map_scan_area_zoom',
+                                                   colorbar_tick_count=6,
+                                                   plot_kind='occupancy_with_projections')
         except Exception:
             self.log.error('Could not create noise map!')
 
     def create_tdac_plot(self):
         try:
-            mask = self.enable_mask.copy()
+            mask = self._roi_mask().copy() if not self._full_matrix_required() else self.enable_mask.copy()
             min_tdac, max_tdac, _, tdac_incr = (0, 8, 8, 1)
             plot_range = range(min_tdac, max_tdac + tdac_incr, tdac_incr)
-            self._plot_distribution(self.tdac_mask[~mask].T,
+            self._plot_distribution(self._read_tdac_mask(full=self._full_matrix_required())[~mask].T,
                                     plot_range=plot_range,
                                     title='TDAC distribution for enabled pixels',
                                     x_axis_title='TDAC',
@@ -1059,17 +1516,50 @@ class Plotting(object):
 
     def create_tdac_map(self):
         try:
-            mask = self.enable_mask.copy()
+            full = self._full_matrix_required()
+            mask = self.enable_mask.copy() if full else self._roi_mask().copy()
             min_tdac, max_tdac = (1, 7)
-            hist = np.ma.masked_array(self.tdac_mask, mask).T
-            self._plot_fancy_occupancy(hist=hist,
-                                       title='TDAC map',
-                                       z_label='TDAC',
-                                       z_min=min(min_tdac, max_tdac),
-                                       z_max=max(min_tdac, max_tdac),
-                                       log_z=False, centered_ticks=True,
-                                       norm_projection=True)
-            self._plot_scan_area_fancy_map(hist=hist,
+            hist = np.ma.masked_array(self._read_tdac_mask(full=full), mask).T
+            if self._show_full_matrix_maps():
+                self._plot_fancy_occupancy(hist=hist,
+                                           title='TDAC map',
+                                           z_label='TDAC',
+                                           z_min=min(min_tdac, max_tdac),
+                                           z_max=max(min_tdac, max_tdac),
+                                           log_z=False, centered_ticks=True,
+                                           norm_projection=True)
+            if self._show_scan_area_maps():
+                if full:
+                    self._plot_scan_area_fancy_map(hist=hist,
+                                                   title='TDAC map scan area',
+                                                   z_label='TDAC',
+                                                   z_min=min(min_tdac, max_tdac),
+                                                   z_max=max(min_tdac, max_tdac),
+                                                   log_z=False,
+                                                   centered_ticks=True,
+                                                   norm_projection=True,
+                                                   suffix='tdac_map_scan_area')
+                else:
+                    self._plot_fancy_occupancy(hist=hist,
+                                               title='TDAC map scan area',
+                                               z_label='TDAC',
+                                               z_min=min(min_tdac, max_tdac),
+                                               z_max=max(min_tdac, max_tdac),
+                                               log_z=False,
+                                               centered_ticks=True,
+                                               norm_projection=True,
+                                               suffix='tdac_map_scan_area')
+                    self._plot_scan_area_map_tiles(hist=hist,
+                                                   title='TDAC map scan area',
+                                                   z_label='TDAC',
+                                                   z_min=min(min_tdac, max_tdac),
+                                                   z_max=max(min_tdac, max_tdac),
+                                                   log_z=False,
+                                                   centered_ticks=True,
+                                                   norm_projection=True,
+                                                   suffix='tdac_map_scan_area_zoom',
+                                                   plot_kind='fancy')
+            self._plot_scan_area_map_tiles(hist=hist,
                                            title='TDAC map scan area',
                                            z_label='TDAC',
                                            z_min=min(min_tdac, max_tdac),
@@ -1077,14 +1567,15 @@ class Plotting(object):
                                            log_z=False,
                                            centered_ticks=True,
                                            norm_projection=True,
-                                           suffix='tdac_map_scan_area')
+                                           suffix='tdac_map_scan_area_zoom',
+                                           plot_kind='fancy')
         except Exception:
             self.log.error('Could not create TDAC map!')
 
     def create_chi2_map(self):
         try:
             mask = self.enable_mask.copy()
-            chi2 = self.Chi2Map[:]
+            chi2 = self._read_chi2_map(full=True)
             sel = chi2 > 0.  # Mask not converged fits (chi2 = 0)
             mask[~sel] = True
 
@@ -1165,7 +1656,7 @@ class Plotting(object):
 
     def create_hit_pix_plot(self):
         try:
-            occ_1d = np.ma.masked_array(self.HistOcc[:].sum(axis=2), self.enable_mask).ravel()
+            occ_1d = np.ma.masked_array(self._hist_occ_sum(full=False), self._roi_mask()).ravel()
 
             if occ_1d.sum() == 0:
                 plot_range = np.arange(0, 100, 1)
@@ -1195,6 +1686,9 @@ class Plotting(object):
         return mask
 
     def _save_plots(self, fig, suffix=None, tight=False):
+        """Save the current figure to the configured outputs."""
+        if self.out_file is None:
+            return
         increase_count = False
         bbox_inches = 'tight' if tight else ''
         if suffix is None:
@@ -1343,7 +1837,9 @@ class Plotting(object):
         self._save_plots(fig, suffix='parameter_page')
 
     def _plot_occupancy(self, hist, electron_axis=False, use_electron_offset=False, title='Occupancy', z_label='# of hits', z_min=None, z_max=None, show_sum=True, suffix=None, extend_upper_bound=True, aspect='equal', colorbar_tick_count=10, colorbar_integer=False, colorbar_scientific=False):
+        """Render a 2D map with optional electron axis and colorbar controls."""
         z_min, z_max = self._resolve_map_z_limits(hist, z_min=z_min, z_max=z_max)
+        z_min, z_max = self._apply_map_range_override(suffix, z_min, z_max)
 
         fig = Figure()
         FigureCanvas(fig)
@@ -1363,6 +1859,7 @@ class Plotting(object):
         ax.set_ylim((self.plot_box_bounds[2], self.plot_box_bounds[3]))
         ax.set_xlim((self.plot_box_bounds[0], self.plot_box_bounds[1]))
         self._set_pixel_axis_ticks(ax)
+        self._apply_axis_override(ax, suffix, allow_x=False, allow_y=False)
         if not show_sum:
             ax.set_title(title, color=TITLE_COLOR)
         else:
@@ -1423,6 +1920,7 @@ class Plotting(object):
         self._save_plots(fig, suffix=suffix)
 
     def _plot_2d_param_hist(self, hist, scan_parameters, y_max=None, electron_axis=False, scan_parameter_name=None, title='Scan Parameter Histogram', ylabel='', suffix=None):
+        """Render a scan-parameter heatmap such as ToT-vs-VCAL."""
 
         if y_max is None:
             y_max = hist.shape[0]
@@ -1445,6 +1943,7 @@ class Plotting(object):
         # ax.set_xlim(x_bins[0], 200)
         # ax.set_ylim(-0.5, y_max)
         ax.set_ylim(-0.5, 20)
+        self._apply_axis_override(ax, suffix)
 
         cb = fig.colorbar(im, fraction=0.04, pad=0.05)
 
@@ -1460,9 +1959,10 @@ class Plotting(object):
         if electron_axis:
             self._add_electron_axis(fig, ax)
 
-        self._save_plots(fig, suffix='histogram')
+        self._save_plots(fig, suffix=suffix or 'histogram')
 
     def _plot_fancy_occupancy(self, hist, title='Occupancy', z_label='#', z_min=None, z_max=None, log_z=True, norm_projection=False, show_sum=True, centered_ticks=False, suffix='fancy_occupancy'):
+        """Render a map together with row/column projections."""
         if log_z:
             title += '\n(logarithmic scale)'
         title += '\nwith projections'
@@ -1473,6 +1973,7 @@ class Plotting(object):
             z_min = 0.1
         if z_max is None:
             z_max = np.ma.max(hist)
+        z_min, z_max = self._apply_map_range_override(suffix, z_min, z_max)
 
         fig = Figure()
         FigureCanvas(fig)
@@ -1495,6 +1996,7 @@ class Plotting(object):
         ax.set_ylim((self.plot_box_bounds[2], self.plot_box_bounds[3]))
         ax.set_xlim((self.plot_box_bounds[0], self.plot_box_bounds[1]))
         self._set_pixel_axis_ticks(ax)
+        self._apply_axis_override(ax, suffix, allow_x=False, allow_y=False)
         if self._module_type is None or not self._module_type.switch_axis():
             ax.set_xlabel('Column')
             ax.set_ylabel('Row')
@@ -1561,6 +2063,7 @@ class Plotting(object):
         self._save_plots(fig, suffix=suffix)
 
     def _plot_scurves(self, scurves, scan_parameters, electron_axis=False, scan_parameter_name=None, suffix='scurves', title='S-curves', ylabel='Occupancy'):
+        """Render the occupancy evolution over the scan parameter."""
         n_injections = self.scan_config.get('n_injections', 100)
         y_max = int(n_injections * 1.5)
         max_occ = y_max + 2
@@ -1569,19 +2072,25 @@ class Plotting(object):
         x_bins = scan_parameters  # np.arange(-0.5, max(scan_parameters) + 1.5)
         y_bins = np.arange(-0.5, max_occ + 0.5)
 
-        noisy_mask = np.any(scurves > y_max, axis=0).reshape((self.cols, self.rows))
-        n_noisy_pixels = np.count_nonzero(noisy_mask & ~self.enable_mask)
+        if scurves.shape[-1] == self.cols * self.rows:
+            enabled_mask_1d = ~self.enable_mask.reshape((scurves.shape[-1]))
+            noisy_mask = np.any(scurves > y_max, axis=0).reshape((self.cols, self.rows))
+            n_noisy_pixels = np.count_nonzero(noisy_mask & ~self.enable_mask)
+        else:
+            roi_mask = self._roi_mask()
+            enabled_mask_1d = ~roi_mask.reshape((scurves.shape[-1]))
+            noisy_mask = np.any(scurves > y_max, axis=0).reshape(roi_mask.shape)
+            n_noisy_pixels = np.count_nonzero(noisy_mask & ~roi_mask)
 
         param_count = scurves.shape[0]
         hist = np.empty([param_count, max_occ], dtype=np.uint32)
         scurves_clipped = np.clip(scurves, 0, max_occ - 1)
-        enabled_pixels = ~self.enable_mask.reshape((scurves.shape[-1]))
 
         for param in range(param_count):
             if self.run_config['scan_id'] == 'autorange_threshold_scan':
-                hist[param] = np.bincount(scurves_clipped[param, enabled_pixels].astype(int), minlength=max_occ)
+                hist[param] = np.bincount(scurves_clipped[param, enabled_mask_1d].astype(int), minlength=max_occ)
             else:
-                hist[param] = np.bincount(scurves_clipped[param, enabled_pixels], minlength=max_occ)
+                hist[param] = np.bincount(scurves_clipped[param, enabled_mask_1d], minlength=max_occ)
 
         fig = Figure()
         FigureCanvas(fig)
@@ -1604,6 +2113,7 @@ class Plotting(object):
 
         im = ax.pcolormesh(x_bins, y_bins, hist.T, norm=norm, rasterized=True, shading='flat')
         ax.set_ylim(-0.5, y_max)
+        self._apply_axis_override(ax, suffix)
 
         if z_max <= 10.0:
             cb = fig.colorbar(im, ticks=np.linspace(start=0.0, stop=z_max, num=min(
@@ -1628,9 +2138,60 @@ class Plotting(object):
 
         self._save_plots(fig, suffix=suffix)
 
+    def _plot_scurves_hist(self, hist, y_max, n_noisy_pixels, enabled_pixels_count, failed_fit_count, scan_parameters, electron_axis=False, scan_parameter_name=None, suffix='scurves', title='S-curves', ylabel='Occupancy'):
+        """Render the S-curve summary histogram from a pre-accumulated histogram."""
+        x_bins = scan_parameters
+        y_bins = np.arange(-0.5, hist.shape[1] + 0.5)
+
+        fig = Figure()
+        FigureCanvas(fig)
+        ax = fig.add_subplot(111)
+        self._add_text(fig)
+
+        fig.patch.set_facecolor('white')
+        cmap = copy.copy(cm.get_cmap('cool'))
+        if np.allclose(hist, 0.0) or hist.max() <= 1:
+            z_max = 1.0
+        else:
+            z_max = hist.max()
+        if z_max <= 10.0:
+            bounds = np.linspace(start=0.0, stop=z_max, num=255, endpoint=True)
+            norm = colors.BoundaryNorm(bounds, cmap.N)
+        else:
+            bounds = np.linspace(start=1.0, stop=z_max, num=255, endpoint=True)
+            norm = colors.LogNorm()
+
+        im = ax.pcolormesh(x_bins, y_bins, hist.T, norm=norm, rasterized=True, shading='flat')
+        ax.set_ylim(-0.5, y_max)
+        self._apply_axis_override(ax, suffix)
+
+        if z_max <= 10.0:
+            cb = fig.colorbar(im, ticks=np.linspace(start=0.0, stop=z_max, num=min(
+                11, math.ceil(z_max) + 1), endpoint=True), fraction=0.04, pad=0.05)
+        else:
+            cb = fig.colorbar(im, fraction=0.04, pad=0.05)
+        cb.set_label("# of pixels")
+        ax.set_title(title + ' for {0} pixel(s)'.format(enabled_pixels_count), color=TITLE_COLOR)
+        if scan_parameter_name is None:
+            ax.set_xlabel('Scan parameter')
+        else:
+            ax.set_xlabel(scan_parameter_name)
+        ax.set_ylabel(ylabel)
+
+        text = 'Failed fits: {0}\nNoisy pixels: {1}'.format(failed_fit_count, n_noisy_pixels)
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.05, 0.88, text, transform=ax.transAxes,
+                fontsize=8, verticalalignment='top', bbox=props)
+
+        if electron_axis:
+            self._add_electron_axis(fig, ax)
+
+        self._save_plots(fig, suffix=suffix)
+
     def _plot_stacked_threshold(self, data, tdac_mask, plot_range=None, electron_axis=False, x_axis_title=None, y_axis_title='# of hits', z_axis_title='TDAC',
                                 title=None, suffix=None, min_tdac=15, max_tdac=0, range_tdac=16,
-                                fit_gauss=True, plot_legend=True, centered_ticks=False, print_failed_fits=False):
+                                fit_gauss=True, plot_legend=True, centered_ticks=False, print_failed_fits=False, failed_fit_count=None):
+        """Render the threshold distribution split by TDAC value."""
         flat_data = self._sanitize_distribution_data(data)
         if flat_data.size == 0:
             self.log.warning('No valid data available for stacked threshold plot.')
@@ -1703,6 +2264,7 @@ class Plotting(object):
         if y_axis_title is not None:
             ax.set_ylabel(y_axis_title)
         ax.grid(True)
+        self._apply_axis_override(ax, suffix)
 
 
         if plot_legend:
@@ -1724,7 +2286,7 @@ class Plotting(object):
                 else:
                     textright += '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\sigma={1:1.2f}\\;\\Delta$VCAL'.format(abs(coeff[1]), abs(coeff[2]))
 
-                textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves)
+                textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves if failed_fit_count is None else failed_fit_count)
                 props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
                 ax.text(0.03, 0.95, textright, transform=ax.transAxes, fontsize=8, verticalalignment='top', bbox=props)
 
@@ -1733,7 +2295,8 @@ class Plotting(object):
 
         self._save_plots(fig, suffix=suffix)
 
-    def _plot_distribution(self, data, plot_range=None, x_axis_title=None, electron_axis=False, use_electron_offset=False, y_axis_title='# of hits', log_y=False, align='edge', title=None, print_failed_fits=False, fit_gauss=True, plot_legend=True, suffix=None):
+    def _plot_distribution(self, data, plot_range=None, x_axis_title=None, electron_axis=False, use_electron_offset=False, y_axis_title='# of hits', log_y=False, align='edge', title=None, print_failed_fits=False, fit_gauss=True, plot_legend=True, suffix=None, failed_fit_count=None):
+        """Render a 1D histogram with optional Gaussian summary."""
         data = self._sanitize_distribution_data(data)
         if data.size == 0:
             self.log.warning('No valid data available for distribution plot %s.', suffix if suffix is not None else '')
@@ -1792,6 +2355,7 @@ class Plotting(object):
         if y_axis_title is not None:
             ax.set_ylabel(y_axis_title)
         ax.grid(True)
+        self._apply_axis_override(ax, suffix)
 
         if plot_legend:
             sel = (data < 1e5)
@@ -1802,7 +2366,7 @@ class Plotting(object):
             else:
                 textright = '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\sigma={1:1.2f}\\;\\Delta$VCAL'.format(mean, rms)
             if print_failed_fits:
-                textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves)
+                textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves if failed_fit_count is None else failed_fit_count)
 
             # Fit results
             if coeff is not None:
@@ -1812,7 +2376,7 @@ class Plotting(object):
                 else:
                     textright += '$\\mu={0:1.2f}\\;\\Delta$VCAL\n$\\sigma={1:1.2f}\\;\\Delta$VCAL'.format(abs(coeff[1]), abs(coeff[2]))
                 if print_failed_fits:
-                    textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves)
+                    textright += '\n\nFailed fits: {0}'.format(self.n_failed_scurves if failed_fit_count is None else failed_fit_count)
 
             props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
             ax.text(0.03, 0.95, textright, transform=ax.transAxes, fontsize=8, verticalalignment='top', bbox=props)
@@ -1824,6 +2388,7 @@ class Plotting(object):
 
     def _plot_1d_hist(self, hist, yerr=None, title=None, x_axis_title=None, y_axis_title=None, x_ticks=None, color='r',
                       plot_range=None, log_y=False, suffix=None, plot_legend=True):
+        """Render a simple 1D histogram from pre-binned data."""
         fig = Figure()
         FigureCanvas(fig)
         ax = fig.add_subplot(111)
@@ -1856,6 +2421,7 @@ class Plotting(object):
                 ax.set_yscale('log')
                 ax.set_ylim((1e-1, np.amax(hist) * 2))
         ax.grid(True)
+        self._apply_axis_override(ax, suffix)
 
         # if plot_legend:
         #     sel = (hist < 1e5)

@@ -11,7 +11,7 @@
 '''
 
 
-def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=19, wait_cycles=1, latency=1400):
+def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=19, wait_cycles=1, latency=1400, progress_callback=None):
     ''' Regular mask shift and analog injection function.
 
     Parameters:
@@ -39,6 +39,8 @@ def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['inj
             # chip.inject(PulseStartCnfg=PulseStartCnfg, PulseStopCnfg=PulseStartCnfg + 512, repetitions=n_injections, wait_cycles=wait_cycles, latency=latency) --> default in dev branch
         if pbar is not None:
             pbar.update(1)
+            if progress_callback is not None:
+                progress_callback()
 
 
 def get_scan_loop_mask_steps(chip, pattern='default'):

@@ -1,4 +1,4 @@
-"""Offline plotting entrypoint for the experimental plotting_v2 module.
+"""Offline plotting entrypoint for the shared plotting module.
 
 Main usage modes:
 1. Pass one or more interpreted files on the command line.
@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tjmonopix2.analysis import plotting_v2
+from tjmonopix2.analysis import plotting
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / 'output_data' / 'module_0' / 'chip_0'
@@ -48,6 +48,10 @@ NO_AXIS_OVERRIDE_PLOTS = {'parameter_page', 'monitoring_summary', 'cluster_shape
 #   added only when:
 #   scan_rows % rows == 0, scan_cols % cols == 0,
 #   scan_rows / rows > 2, scan_cols / cols > 2
+# - map_views:
+#   Control whether 2D maps are shown on the full matrix and/or scan area.
+#   Typical offline choice:
+#   {'full_matrix': False, 'scan_area': True}
 # - list_plots:
 #   Print available plot ids and exit.
 #
@@ -61,14 +65,14 @@ NO_AXIS_OVERRIDE_PLOTS = {'parameter_page', 'monitoring_summary', 'cluster_shape
 #     'map_splits': {
 #         'noise_map': {'rows': 6, 'cols': 1},
 #     },
+#     'map_views': {'full_matrix': False, 'scan_area': True},
 #     'list_plots': False,
 # }
 plot_config = {
     'exclude_plots': [],
     'axis_ranges': {},
-    'map_splits': {
-        'noise_map': {'rows': 4, 'cols': 1},
-        },
+    'map_splits': None,
+    'map_views': {'full_matrix': False, 'scan_area': True},
     'list_plots': False,
 }
 
@@ -123,6 +127,7 @@ def _merge_with_plot_config(args):
     config['exclude_plots'] = list(config.get('exclude_plots', []))
     config['axis_ranges'] = dict(config.get('axis_ranges', {}))
     config['map_splits'] = dict(config['map_splits']) if config.get('map_splits') else None
+    config['map_views'] = dict(config.get('map_views', {}))
 
     cli_exclude_plots = _parse_plot_list(args.exclude_plot)
     if cli_exclude_plots:
@@ -182,14 +187,14 @@ def _axis_override_description(plot_id):
 
 
 def main():
-    """Run plotting_v2 on one or more interpreted files."""
+    """Run shared plotting on one or more interpreted files."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('files', nargs='*', help='Interpreted HDF5 files to plot. If omitted, use the latest one from the configured directory.')
     parser.add_argument('-d', '--directory', default=None, help='Directory used to find the latest interpreted file when no file is passed.')
     parser.add_argument('--exclude-plot', action='append', default=[], help='Plot id to exclude. Can be repeated or comma-separated.')
     parser.add_argument('--axis-range', action='append', default=[], help='Axis override like threshold_map:x=350,380:y=0,512:z=0,30')
     parser.add_argument('--list-plots', action='store_true', help='List available plot ids for the selected file and exit.')
-    parser.add_argument('-P', dest='force_plotting', action='store_true', help='Force plotting even if the offline PDF already exists.')
+    parser.add_argument('-P', dest='force_plotting', action='store_true', help='Force plotting even if the offline PDF already exists. If no interpreted.h5 is specified, it takes the last one in the folder.')
     args = parser.parse_args()
 
     config = _merge_with_plot_config(args)
@@ -198,13 +203,14 @@ def main():
     input_files = _resolve_input_files(args.files, input_directory)
 
     first_file = input_files[0]
-    with plotting_v2.Plotting(
+    with plotting.Plotting(
         analyzed_data_file=str(first_file),
         pdf_file=str(_resolve_pdf_path(first_file)),
         notify=False,
         show_progress=True,
         axis_ranges=config['axis_ranges'],
         map_split_config=config['map_splits'],
+        map_output_config=config['map_views'],
         create_output=False,
     ) as plotter:
         if config['list_plots']:
@@ -222,13 +228,14 @@ def main():
             continue
 
         print(f'Plotting: {input_file.name}')
-        with plotting_v2.Plotting(
+        with plotting.Plotting(
             analyzed_data_file=str(input_file),
             pdf_file=str(pdf_path),
             notify=False,
             show_progress=True,
             axis_ranges=config['axis_ranges'],
             map_split_config=config['map_splits'],
+            map_output_config=config['map_views'],
         ) as plotter:
             plotter.create_selected_plots(selected_plots=selected_plots)
 

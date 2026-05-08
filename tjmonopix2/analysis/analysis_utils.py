@@ -367,7 +367,7 @@ def _mask_bad_data(scurve, n_injections):
     return scurve_mask
 
 
-def fit_scurves_multithread(scurves, scan_params, n_injections=None, invert_x=False, optimize_fit_range=False):
+def fit_scurves_multithread(scurves, scan_params, n_injections=None, invert_x=False, optimize_fit_range=False, output_shape=(512, 512)):
     ''' Fit Scurves on all available cores in parallel.
 
         Parameters
@@ -383,6 +383,8 @@ def fit_scurves_multithread(scurves, scan_params, n_injections=None, invert_x=Fa
         optimize_fit_range: boolean
             Reduce fit range of each S-curve independently to the S-Curve like range. Take full
             range if false
+        output_shape: tuple
+            Final 2D map shape used to reshape threshold / noise / chi2 fit results.
     '''
 
     scan_params = np.array(scan_params)  # Make sure it is numpy array
@@ -429,9 +431,9 @@ def fit_scurves_multithread(scurves, scan_params, n_injections=None, invert_x=Fa
         thr *= -1
     sig = np.abs(result_array[:, 1])
     chi2ndf = result_array[:, 2]
-    thr2D = np.reshape(thr, (512, 512))
-    sig2D = np.reshape(sig, (512, 512))
-    chi2ndf2D = np.reshape(chi2ndf, (512, 512))
+    thr2D = np.reshape(thr, output_shape)
+    sig2D = np.reshape(sig, output_shape)
+    chi2ndf2D = np.reshape(chi2ndf, output_shape)
     return thr2D, sig2D, chi2ndf2D
 
 

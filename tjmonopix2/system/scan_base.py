@@ -217,6 +217,7 @@ class ScanBase(object):
 
         # Needed for parallel scans where several readout threads change the chip handles
         self.chip_handle_lock = Lock()
+        self._cumulative_readout_words = 0
 
         # All chips data containers
         self.chips = {}
@@ -283,6 +284,7 @@ class ScanBase(object):
                 for _ in self.iterate_chips():
                     self._set_receiver_enabled(receiver=self.chip.receiver, enabled=True)
                 self.daq.reset_fifo()
+                self.reset_cumulative_readout_words()
                 self._scan(**self.scan_config)
                 for _ in self.iterate_chips():
                     self._set_receiver_enabled(receiver=self.chip.receiver, enabled=False)
@@ -291,6 +293,7 @@ class ScanBase(object):
                 for i, _ in enumerate(self.iterate_chips()):
                     with self._logging_through_handler(self.log_fh):
                         self._set_receiver_enabled(receiver=self.chip.receiver, enabled=True)
+                        self.reset_cumulative_readout_words()
                         ret_values[i] = self._scan(**self.scan_config)
                         self._set_receiver_enabled(receiver=self.chip.receiver, enabled=False)
             # Finalize scan
@@ -1138,6 +1141,20 @@ class ScanBase(object):
                 self._close_logfile(handler)
 
     # Readout methods
+    def reset_cumulative_readout_words(self):
+        self._cumulative_readout_words = 0
+
+    def get_cumulative_readout_words(self):
+        current_words = 0
+        if getattr(self, 'fifo_readout', None) is not None and self.fifo_readout.is_running:
+            current_words = getattr(self.fifo_readout, '_record_count', 0)
+        return self._cumulative_readout_words + current_words
+
+    def update_readout_progress(self, pbar, refresh=True, **postfix):
+        progress_postfix = {'words': f'{self.get_cumulative_readout_words():,}'}
+        progress_postfix.update(postfix)
+        pbar.set_postfix(progress_postfix, refresh=refresh)
+
     @contextmanager
     def readout(self, scan_param_id=0, timeout=10.0, **kwargs):
 
@@ -1159,6 +1176,7 @@ class ScanBase(object):
                 for _ in range(100):
                     self.daq.rx_channels[self.chip.receiver].is_done()
             self.stop_readout(timeout=timeout)
+            self._cumulative_readout_words += getattr(self.fifo_readout, '_record_count', 0)
 
     def start_readout(self, **kwargs):
         # Pop parameters for fifo_readout.start

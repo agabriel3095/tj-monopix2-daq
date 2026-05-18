@@ -102,7 +102,9 @@ class AnalogScan(ScanBase):
     def _scan(self, n_injections=100, **_):
         pbar = tqdm(total=get_scan_loop_mask_steps(self.chip), unit='Mask steps')
         with self.readout(scan_param_id=0):
-            shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=0)
+            shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=0,
+                             step_callback=lambda: self.update_readout_progress(pbar))
+        self.update_readout_progress(pbar)
         pbar.close()
 
         self.log.success('Scan finished')

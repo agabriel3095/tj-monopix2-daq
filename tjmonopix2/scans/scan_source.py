@@ -167,6 +167,7 @@ class SourceScan(ScanBase):
                     # Update progress bar
                     try:
                         self.pbar.update(1)
+                        self.update_readout_progress(self.pbar)
                     except ValueError:
                         pass
 
@@ -174,6 +175,7 @@ class SourceScan(ScanBase):
                     self.stop_scan.set()
                     self.log.info('Scan was stopped due to keyboard interrupt')
 
+        self.update_readout_progress(self.pbar)
         self.pbar.close()
         self.log.success('Scan finished')
 

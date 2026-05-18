@@ -75,6 +75,7 @@ class ExtTriggerScan(ScanBase):
                             self.pbar.update(1)
                         elif max_triggers:
                             self.pbar.update(self.daq.get_trigger_counter() - triggers)
+                        self.update_readout_progress(self.pbar)
                     except ValueError:
                         pass
 
@@ -87,6 +88,7 @@ class ExtTriggerScan(ScanBase):
                     self.stop_scan.set()
                     self.log.info('Scan was stopped due to keyboard interrupt')
 
+        self.update_readout_progress(self.pbar)
         self.pbar.close()
         self.daq.disable_tlu_module()
         self.log.success('Scan finished')

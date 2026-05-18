@@ -225,9 +225,11 @@ class ThresholdScan(ScanBase):
             self.store_scan_par_values(scan_param_id=scan_param_id, vcal_high=VCAL_HIGH, vcal_low=vcal_low)
             with self.readout(scan_param_id=scan_param_id):
                 #shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id)
-                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,PulseStartCnfg=19)
+                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,
+                                 PulseStartCnfg=19, step_callback=lambda: self.update_readout_progress(pbar))
                 # if we want to measure ANAMON0 and ANAMON1 at the same time, the following line inject in all rows at the same time
                 #  self.chip.inject(PulseStartCnfg=19, PulseStopCnfg=19+900, repetitions=n_injections, wait_cycles=1, latency=1400)
+        self.update_readout_progress(pbar)
         pbar.close()
         self.log.success('Scan finished')
 

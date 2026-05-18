@@ -11,7 +11,7 @@
 '''
 
 
-def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=19, wait_cycles=1, latency=1400, progress_callback=None):
+def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=19, wait_cycles=1, latency=1400, step_callback=None, progress_callback=None):
     ''' Regular mask shift and analog injection function.
 
     Parameters:
@@ -33,14 +33,16 @@ def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['inj
         skip_empty : boolean
             If True skip empty mask steps for speedup. Default is True.
     '''
+    callback = step_callback if step_callback is not None else progress_callback
+
     for fe, active_pixels in chip.masks.shift(masks=masks, pattern=pattern, cache=cache, skip_empty=skip_empty):
         if not fe == 'skipped':
             chip.inject(PulseStartCnfg=PulseStartCnfg, PulseStopCnfg=PulseStartCnfg + 900, repetitions=n_injections, wait_cycles=wait_cycles, latency=latency)
             # chip.inject(PulseStartCnfg=PulseStartCnfg, PulseStopCnfg=PulseStartCnfg + 512, repetitions=n_injections, wait_cycles=wait_cycles, latency=latency) --> default in dev branch
         if pbar is not None:
             pbar.update(1)
-            if progress_callback is not None:
-                progress_callback()
+            if callback is not None:
+                callback()
 
 
 def get_scan_loop_mask_steps(chip, pattern='default'):

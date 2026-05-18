@@ -22,7 +22,7 @@ scan_configuration = {
     'start_row': 0,
     'stop_row': 512,
 
-    'scan_timeout': 300,
+    'scan_timeout': 200,
     'min_occupancy': 10,
 }
 
@@ -136,7 +136,9 @@ class NoiseOccScan(ScanBase):
                 # Update progress bar
                 time.sleep(1)
                 self.pbar.update(1)
+                self.update_readout_progress(self.pbar)
 
+        self.update_readout_progress(self.pbar)
         self.pbar.close()
         self.log.success('Scan finished')
 

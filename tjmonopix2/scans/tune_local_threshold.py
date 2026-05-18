@@ -257,7 +257,9 @@ class TDACTuning(ScanBase):
             self.chip.masks.update()
             # Inject target charge
             with self.readout(scan_param_id=scan_param, callback=self.analyze_data_online):
-                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param,PulseStartCnfg=19)
+                shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param,
+                                 PulseStartCnfg=19, step_callback=lambda: self.update_readout_progress(pbar))
+            self.update_readout_progress(pbar)
             # Get hit occupancy using online analysis
             occupancy = self.data.hist_occ.get()
             print("Occupancy =", occupancy[start_column:stop_column, start_row:stop_row])

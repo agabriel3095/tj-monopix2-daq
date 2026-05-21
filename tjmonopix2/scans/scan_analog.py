@@ -7,7 +7,8 @@
 
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
-                                               shift_and_inject)
+                                               shift_and_inject,
+                                               DEFAULT_PULSE_START_CNFG)
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
 
@@ -18,6 +19,9 @@ scan_configuration = {
     'stop_column': 290,
     'start_row': 0,
     'stop_row': 512,
+    # Analog scans keep the same configurable pulse timing interface as the
+    # threshold scans so BCID studies can reuse this scan path if needed.
+    'pulse_start_cnfg': DEFAULT_PULSE_START_CNFG,
 }
 
 
@@ -99,11 +103,11 @@ class AnalogScan(ScanBase):
         # self.chip.registers["STOP_CONF"].write(271)
 
 
-    def _scan(self, n_injections=100, **_):
+    def _scan(self, n_injections=100, pulse_start_cnfg=DEFAULT_PULSE_START_CNFG, **_):
         pbar = tqdm(total=get_scan_loop_mask_steps(self.chip), unit='Mask steps')
         with self.readout(scan_param_id=0):
             shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=0,
-                             step_callback=lambda: self.update_readout_progress(pbar))
+                             PulseStartCnfg=pulse_start_cnfg, step_callback=lambda: self.update_readout_progress(pbar))
         self.update_readout_progress(pbar)
         pbar.close()
 
@@ -128,8 +132,12 @@ if __name__ == "__main__":
     parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
     parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
     parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--pulse-start-cnfg", type=int, default=scan_configuration.get("pulse_start_cnfg", DEFAULT_PULSE_START_CNFG))
     parser.add_argument("--h5_config_file", type=str, default=None)
     args = parser.parse_args()
+
+    # Mirror the CLI-selected pulse start into the saved scan configuration.
+    scan_configuration["pulse_start_cnfg"] = args.pulse_start_cnfg
 
     if args.h5_config_file:
         scan_configuration["chip_config_file"] = args.h5_config_file

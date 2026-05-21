@@ -15,7 +15,7 @@ import numpy as np
 
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
-from tjmonopix2.scans.shift_and_inject import shift_and_inject, get_scan_loop_mask_steps
+from tjmonopix2.scans.shift_and_inject import shift_and_inject, get_scan_loop_mask_steps, DEFAULT_PULSE_START_CNFG
 from tjmonopix2.analysis import online as oa
 
 import yaml
@@ -32,6 +32,9 @@ scan_configuration = {
     'stop_row': 512,
 
     'n_injections': 100,
+    # Keep TDAC tuning aligned with the configurable pulse timing used by the
+    # scan helpers so BCID-dependent studies can tune under matching conditions.
+    'pulse_start_cnfg': DEFAULT_PULSE_START_CNFG,
 
     # Target threshold
     'VCAL_LOW': 30,
@@ -214,7 +217,7 @@ class TDACTuning(ScanBase):
 
         self.data.hist_occ = oa.OccupancyHistogramming()
 
-    def _scan(self, start_column=0, stop_column=512, start_row=0, stop_row=512, n_injections=100, **_):
+    def _scan(self, start_column=0, stop_column=512, start_row=0, stop_row=512, n_injections=100, pulse_start_cnfg=DEFAULT_PULSE_START_CNFG, **_):
         '''
         Global threshold tuning main loop
 
@@ -258,7 +261,7 @@ class TDACTuning(ScanBase):
             # Inject target charge
             with self.readout(scan_param_id=scan_param, callback=self.analyze_data_online):
                 shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param,
-                                 PulseStartCnfg=19, step_callback=lambda: self.update_readout_progress(pbar))
+                                 PulseStartCnfg=pulse_start_cnfg, step_callback=lambda: self.update_readout_progress(pbar))
             self.update_readout_progress(pbar)
             # Get hit occupancy using online analysis
             occupancy = self.data.hist_occ.get()

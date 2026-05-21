@@ -7,7 +7,8 @@
 
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.scans.shift_and_inject import (get_scan_loop_mask_steps,
-                                               shift_and_inject)
+                                               shift_and_inject,
+                                               DEFAULT_PULSE_START_CNFG)
 from tjmonopix2.system.scan_base import ScanBase
 from tqdm import tqdm
 
@@ -20,12 +21,19 @@ scan_configuration = {
     'start_row': 0,
     'stop_row': 512,
 
+    # Allow threshold scans to reuse the generic injection helper while still
+    # exposing the pulse timing as a scan-time option.
+    # 'pulse_start_cnfg': 19,
+
     'n_injections': 100,
     'VCAL_HIGH': 140,
     'VCAL_LOW_start': 140-0,
     # 'VCAL_LOW_stop': 140-20,
     'VCAL_LOW_stop': 140-40,
     'VCAL_LOW_step': -1
+
+
+
 
 
     # # # # if enabled injection in all rows at the same time to measure both ANAMON0 and ANAMON1
@@ -210,7 +218,7 @@ class ThresholdScan(ScanBase):
 
         # self.chip.registers["ICASN"].write(25)
 
-    def _scan(self, n_injections=100, VCAL_HIGH=80, VCAL_LOW_start=80, VCAL_LOW_stop=40, VCAL_LOW_step=-1, **_):
+    def _scan(self, n_injections=100, pulse_start_cnfg=DEFAULT_PULSE_START_CNFG, VCAL_HIGH=80, VCAL_LOW_start=80, VCAL_LOW_stop=40, VCAL_LOW_step=-1, **_):
         """
         Injects charges from VCAL_LOW_START to VCAL_LOW_STOP in steps of VCAL_LOW_STEP while keeping VCAL_HIGH constant.
         """
@@ -226,7 +234,7 @@ class ThresholdScan(ScanBase):
             with self.readout(scan_param_id=scan_param_id):
                 #shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id)
                 shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=pbar, scan_param_id=scan_param_id,
-                                 PulseStartCnfg=19, step_callback=lambda: self.update_readout_progress(pbar))
+                                 PulseStartCnfg=pulse_start_cnfg, step_callback=lambda: self.update_readout_progress(pbar))
                 # if we want to measure ANAMON0 and ANAMON1 at the same time, the following line inject in all rows at the same time
                 #  self.chip.inject(PulseStartCnfg=19, PulseStopCnfg=19+900, repetitions=n_injections, wait_cycles=1, latency=1400)
         self.update_readout_progress(pbar)
@@ -248,8 +256,13 @@ if __name__ == "__main__":
     parser.add_argument("--regs_json", type=str, help="Path to JSON file with regs configs", default="../chip_registers.json")
     parser.add_argument("--chip", type=str, help="Chip name (e.g., W8R6)")
     parser.add_argument("--fe", type=str, help="FE name (e.g., HVC or DCC)")
+    parser.add_argument("--pulse-start-cnfg", type=int, default=scan_configuration.get("pulse_start_cnfg", DEFAULT_PULSE_START_CNFG))
     parser.add_argument("--h5_config_file", type=str, default=None)
     args = parser.parse_args()
+
+    # Store the CLI override in the scan configuration so it is persisted into
+    # the recorded HDF5 metadata and reused by the scan class.
+    scan_configuration["pulse_start_cnfg"] = args.pulse_start_cnfg
 
     if args.h5_config_file:
         scan_configuration["chip_config_file"] = args.h5_config_file

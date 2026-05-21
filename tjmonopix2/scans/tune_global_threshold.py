@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from tjmonopix2.analysis import analysis, plotting
 from tjmonopix2.system.scan_base import ScanBase
-from tjmonopix2.scans.shift_and_inject import shift_and_inject
+from tjmonopix2.scans.shift_and_inject import shift_and_inject, DEFAULT_PULSE_START_CNFG
 from tjmonopix2.analysis import online as oa
 
 
@@ -27,6 +27,9 @@ scan_configuration = {
     'stop_row': 512,
 
     'n_injections': 100,
+    # Reuse the same pulse timing knob during tuning so comparisons with
+    # threshold scans are done with identical injection timing.
+    'pulse_start_cnfg': DEFAULT_PULSE_START_CNFG,
 
     # Target threshold
     'VCAL_LOW': 140-18,
@@ -105,7 +108,7 @@ class GDACTuning(ScanBase):
 
         self.data.hist_occ = oa.OccupancyHistogramming()
 
-    def _scan(self, n_injections=100, gdac_value_bits=range(6, -1, -1), **_):
+    def _scan(self, n_injections=100, pulse_start_cnfg=DEFAULT_PULSE_START_CNFG, gdac_value_bits=range(6, -1, -1), **_):
         '''
         Global threshold tuning main loop
 
@@ -147,7 +150,7 @@ class GDACTuning(ScanBase):
             write_gdac_registers(gdac_new)
 
             # Calculate new GDAC from hit occupancies: median pixel hits < n_injections / 2 --> decrease global threshold
-            hist_occ = self.get_occupancy(scan_param_id, n_injections)
+            hist_occ = self.get_occupancy(scan_param_id, n_injections, pulse_start_cnfg)
             mean_occ = np.median(hist_occ[sel_pixel])
 
             # Binary search does not have to converge to best solution for not exact matches
@@ -174,7 +177,7 @@ class GDACTuning(ScanBase):
             # Do not check if setting was already used before, safe time of one iteration
             if best_gdacs != gdac_new:
                 write_gdac_registers(gdac_new)
-                hist_occ = self.get_occupancy(scan_param_id, n_injections)
+                hist_occ = self.get_occupancy(scan_param_id, n_injections, pulse_start_cnfg)
                 mean_occ = np.median(hist_occ[:][sel_pixel[:]])
                 best_gdacs, best_gdac_offset = update_best_gdacs(mean_occ, best_gdacs, best_gdac_offset)
         self.data.pbar.close()
@@ -186,13 +189,14 @@ class GDACTuning(ScanBase):
         write_gdac_registers(best_gdacs)
         self.data.hist_occ.close()  # stop analysis process
 
-    def get_occupancy(self, scan_param_id, n_injections):
+    def get_occupancy(self, scan_param_id, n_injections, pulse_start_cnfg):
         ''' Analog scan and stuck pixel scan '''
         # Set new TDACs
-        # Inject target charge
+        # Inject the target charge with the requested pulse timing before the
+        # online occupancy histogram is evaluated for the binary-search step.
         with self.readout(scan_param_id=scan_param_id, callback=self.analyze_data_online):
             shift_and_inject(chip=self.chip, n_injections=n_injections, pbar=self.data.pbar, scan_param_id=scan_param_id,
-                             step_callback=lambda: self.update_readout_progress(self.data.pbar))
+                             PulseStartCnfg=pulse_start_cnfg, step_callback=lambda: self.update_readout_progress(self.data.pbar))
         self.update_readout_progress(self.data.pbar)
         # Get hit occupancy using online analysis
         occupancy = self.data.hist_occ.get()

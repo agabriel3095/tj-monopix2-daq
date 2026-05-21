@@ -11,7 +11,12 @@
 '''
 
 
-def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=19, wait_cycles=1, latency=1400, step_callback=None, progress_callback=None):
+# Keep the historical pulse-start setting as the shared default so scans only
+# need to override it when they are explicitly studying BCID timing.
+DEFAULT_PULSE_START_CNFG = 19
+
+
+def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['injection', 'enable'], pattern='default', cache=False, skip_empty=True, PulseStartCnfg=DEFAULT_PULSE_START_CNFG, wait_cycles=1, latency=1400, step_callback=None, progress_callback=None):
     ''' Regular mask shift and analog injection function.
 
     Parameters:
@@ -37,6 +42,8 @@ def shift_and_inject(chip, n_injections, pbar=None, scan_param_id=0, masks=['inj
 
     for fe, active_pixels in chip.masks.shift(masks=masks, pattern=pattern, cache=cache, skip_empty=skip_empty):
         if not fe == 'skipped':
+            # Derive PulseStopCnfg from the selected start so all scans keep the
+            # same injection width while still allowing BCID phase shifts.
             chip.inject(PulseStartCnfg=PulseStartCnfg, PulseStopCnfg=PulseStartCnfg + 900, repetitions=n_injections, wait_cycles=wait_cycles, latency=latency)
             # chip.inject(PulseStartCnfg=PulseStartCnfg, PulseStopCnfg=PulseStartCnfg + 512, repetitions=n_injections, wait_cycles=wait_cycles, latency=latency) --> default in dev branch
         if pbar is not None:

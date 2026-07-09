@@ -65,6 +65,13 @@ class Analysis(object):
             self.chip_settings = au.ConfigDict(in_file.root.configuration_in.chip.settings[:])
             self.tlu_config = au.ConfigDict(in_file.root.configuration_in.bench.TLU[:])
 
+    def _get_output_configuration_root(self, in_file):
+        '''Return the configuration group to copy into the interpreted file.'''
+        if hasattr(in_file.root, 'configuration_out'):
+            return in_file.root.configuration_out
+        self.log.warning('Raw data file has no configuration_out group. Falling back to configuration_in for interpreted-file metadata.')
+        return in_file.root.configuration_in
+
     def __enter__(self):
         return self
 
@@ -337,7 +344,8 @@ class Analysis(object):
 
             with tb.open_file(self.analyzed_data_file, 'w', title=in_file.title) as out_file:
                 out_file.create_group(out_file.root, name='configuration_in', title='Configuration after scan step')
-                out_file.copy_children(in_file.root.configuration_out, out_file.root.configuration_in, recursive=True)
+                out_config_root = self._get_output_configuration_root(in_file)
+                out_file.copy_children(out_config_root, out_file.root.configuration_in, recursive=True)
                 try:
                     scan_start = float(np.min(meta_data['timestamp_start']))
                     scan_stop = float(np.max(meta_data['timestamp_stop']))

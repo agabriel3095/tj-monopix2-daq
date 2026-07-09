@@ -46,6 +46,123 @@ TOT_LIKE_SCANS = {'analog_scan', 'threshold_scan', 'global_threshold_tuning', 's
 THRESHOLD_LIKE_SCANS = {'threshold_scan', 'calibrate_tot'}
 
 
+def _available_plot_details_from_scan(
+    scan_id,
+    clustered=False,
+    has_tdc_status=False,
+    include_monitoring=False,
+    has_hist_occ=True,
+    has_hist_tot=True,
+    has_threshold_map=True,
+    has_noise_map=True,
+    has_chi2_map=True,
+    has_tdac=True,
+):
+    """Build plot ids and labels from lightweight file metadata."""
+    details = []
+    if scan_id in ['dac_linearity_scan', 'adc_tuning']:
+        return [
+            ('parameter_page', 'Parameter page'),
+            ('dac_linearity', 'DAC linearity'),
+        ]
+
+    details.append(('parameter_page', 'Parameter page'))
+    if has_hist_occ:
+        details.append(('occupancy_map', 'Occupancy map'))
+    if scan_id in SOURCE_LIKE_SCANS and has_hist_occ:
+        details.append(('fancy_occupancy', 'Fancy occupancy'))
+    if scan_id in TOT_LIKE_SCANS and has_hist_occ:
+        details.append(('hit_pix', 'Hits per pixel'))
+    if scan_id in TOT_LIKE_SCANS and has_tdac:
+        details.extend([
+            ('tdac_plot', 'TDAC distribution'),
+            ('tdac_map', 'TDAC map'),
+        ])
+    if scan_id in TOT_LIKE_SCANS and has_hist_tot:
+        details.extend([
+            ('tot_plot', 'ToT distribution'),
+            ('tot_map', 'ToT map'),
+        ])
+    if scan_id in THRESHOLD_LIKE_SCANS and has_hist_tot:
+        details.append(('tot_hist', 'ToT histogram'))
+    if scan_id in THRESHOLD_LIKE_SCANS and has_hist_occ:
+        details.append(('scurves', 'S-curves'))
+    if scan_id in THRESHOLD_LIKE_SCANS and has_threshold_map and has_chi2_map:
+        details.extend([
+            ('threshold_plot', 'Threshold distribution'),
+            ('stacked_threshold', 'Stacked threshold'),
+            ('threshold_map', 'Threshold map'),
+        ])
+    if scan_id in THRESHOLD_LIKE_SCANS and has_noise_map and has_chi2_map:
+        details.extend([
+            ('noise_plot', 'Noise distribution'),
+            ('noise_map', 'Noise map'),
+        ])
+    if scan_id == 'global_threshold_tuning' and has_hist_occ:
+        details.append(('scurves', 'S-curves'))
+    if scan_id == 'global_threshold_tuning' and has_threshold_map and has_chi2_map:
+        details.extend([
+            ('threshold_plot', 'Threshold distribution'),
+            ('threshold_map', 'Threshold map'),
+        ])
+    if scan_id == 'global_threshold_tuning' and has_noise_map and has_chi2_map:
+        details.extend([
+            ('noise_plot', 'Noise distribution'),
+            ('noise_map', 'Noise map'),
+        ])
+    if clustered:
+        details.extend([
+            ('cluster_tot', 'Cluster ToT'),
+            ('cluster_shape', 'Cluster shape'),
+            ('cluster_size', 'Cluster size'),
+        ])
+    if include_monitoring:
+        details.extend([
+            ('monitoring_summary', 'Monitoring summary'),
+            ('monitoring_main', 'Monitoring main page'),
+        ])
+    return details
+
+
+def list_available_plot_details_from_file(analyzed_data_file):
+    """Return available plot ids and labels without loading heavy plot datasets."""
+    with tb.open_file(analyzed_data_file, 'r') as in_file:
+        root = in_file.root
+        config_root = root.configuration_in if hasattr(root, 'configuration_in') else root.configuration_out
+        run_config = au.ConfigDict(config_root.scan.run_config[:])
+        scan_id = run_config.get('scan_id')
+        clustered = hasattr(root, 'Cluster')
+        has_tdc_status = hasattr(root, 'HistTdcStatus')
+        has_hist_occ = hasattr(root, 'HistOcc')
+        has_hist_tot = hasattr(root, 'HistTot')
+        has_threshold_map = hasattr(root, 'ThresholdMap')
+        has_noise_map = hasattr(root, 'NoiseMap')
+        has_chi2_map = hasattr(root, 'Chi2Map')
+        has_tdac = hasattr(config_root.chip.masks, 'tdac')
+
+        monitoring_group = getattr(root, 'monitoring', None)
+        include_monitoring = False
+        if monitoring_group is not None:
+            try:
+                monitoring_cfg = monitoring.load_monitoring_config_from_root(root)
+            except Exception:
+                monitoring_cfg = None
+            include_monitoring = monitoring_cfg is None or monitoring_cfg.get('include_in_pdf', True)
+
+        return _available_plot_details_from_scan(
+            scan_id=scan_id,
+            clustered=clustered,
+            has_tdc_status=has_tdc_status,
+            include_monitoring=include_monitoring,
+            has_hist_occ=has_hist_occ,
+            has_hist_tot=has_hist_tot,
+            has_threshold_map=has_threshold_map,
+            has_noise_map=has_noise_map,
+            has_chi2_map=has_chi2_map,
+            has_tdac=has_tdac,
+        )
+
+
 class Plotting(object):
     """Create plots from an interpreted HDF5 file.
 
@@ -98,60 +215,82 @@ class Plotting(object):
             self.skip_plotting = True
             return
 
-        self.root = root
-        self.scan_config = au.ConfigDict(root.configuration_in.scan.scan_config[:])
-        self.run_config = au.ConfigDict(root.configuration_in.scan.run_config[:])
-        self.chip_settings = au.ConfigDict(root.configuration_in.chip.settings[:])
-        self.cols = 512
-        self.rows = 512
-        self.num_pix = self.rows * self.cols
-        self.plot_box_bounds = [0.5, self.cols + 0.5, self.rows + 0.5, 0.5]
+        self.in_file = getattr(self, 'in_file', None)
         try:
-            self.scan_params = root.configuration_in.scan.scan_params[:]
-        except tb.NoSuchNodeError:
-            self.scan_params = None
+            self.root = root
+            self.config_root = self._get_configuration_root(root)
+            self.scan_config = au.ConfigDict(self.config_root.scan.scan_config[:])
+            self.run_config = au.ConfigDict(self.config_root.scan.run_config[:])
+            self.chip_settings = au.ConfigDict(self.config_root.chip.settings[:])
+            self.cols = 512
+            self.rows = 512
+            self.num_pix = self.rows * self.cols
+            self.plot_box_bounds = [0.5, self.cols + 0.5, self.rows + 0.5, 0.5]
+            self.HistOcc = None
+            self.HistTot = None
+            self.HistTdcStatus = None
+            self.ThresholdMap = None
+            self.Chi2Map = None
+            self.NoiseMap = None
+            self.tdac_node = None
+            try:
+                self.scan_params = self.config_root.scan.scan_params[:]
+            except tb.NoSuchNodeError:
+                self.scan_params = None
 
-        self.registers = au.ConfigDict(root.configuration_in.chip.registers[:])
-        self.start_column = int(self.scan_config.get('start_column', 0))
-        self.stop_column = int(self.scan_config.get('stop_column', self.cols))
-        self.start_row = int(self.scan_config.get('start_row', 0))
-        self.stop_row = int(self.scan_config.get('stop_row', self.rows))
-        self.roi_cols = slice(self.start_column, self.stop_column)
-        self.roi_rows = slice(self.start_row, self.stop_row)
+            self.registers = au.ConfigDict(self.config_root.chip.registers[:])
+            self.start_column = int(self.scan_config.get('start_column', 0))
+            self.stop_column = int(self.scan_config.get('stop_column', self.cols))
+            self.start_row = int(self.scan_config.get('start_row', 0))
+            self.stop_row = int(self.scan_config.get('stop_row', self.rows))
+            self.roi_cols = slice(self.start_column, self.stop_column)
+            self.roi_rows = slice(self.start_row, self.stop_row)
 
-        if self.run_config['scan_id']:  # TODO: define 'usual' scans
-            self.enable_mask = self._mask_disabled_pixels(root.configuration_in.chip.use_pixel[:], self.scan_config)
-            self.n_enabled_pixels = len(self.enable_mask[~self.enable_mask])
-            self.tdac_node = root.configuration_in.chip.masks.tdac
+            if self.run_config['scan_id']:  # TODO: define 'usual' scans
+                self.enable_mask = self._mask_disabled_pixels(self.config_root.chip.use_pixel[:], self.scan_config)
+                self.n_enabled_pixels = len(self.enable_mask[~self.enable_mask])
+                try:
+                    self.tdac_node = self.config_root.chip.masks.tdac
+                except tb.NoSuchNodeError:
+                    self.tdac_node = None
+        except Exception:
+            if self.in_file is not None:
+                self.in_file.close()
+                self.in_file = None
+            raise
 
         # self.calibration = {e[0].decode('utf-8'): float(e[1].decode('utf-8')) for e in root.configuration_in.chip.calibration[:]}
 
-        if 'VCAL_LOW' in self.scan_params.dtype.names:
-            self.scan_parameter_range = np.array(self.scan_params['VCAL_HIGH'] - self.scan_params['VCAL_LOW'], dtype=float)
-        elif 'VCAL_LOW_start' in self.scan_config:
-            self.scan_parameter_range = [self.scan_config['VCAL_HIGH'] - v for v in
-                                         range(self.scan_config['VCAL_LOW_start'],
-                                               self.scan_config['VCAL_LOW_stop'] - 1,
-                                               self.scan_config['VCAL_LOW_step'])]
-        elif 'VTH_start' in self.scan_config:
-            self.scan_parameter_range = list(range(self.scan_config['VTH_start'],
-                                                   self.scan_config['VTH_stop'],
-                                                   -1 * self.scan_config['VTH_step']))
-        else:
-            self.scan_parameter_range = None
+        self.scan_parameter_range = self._build_scan_parameter_range()
 
         try:
             self.HistTdcStatus = root.HistTdcStatus[:]
         except tb.NoSuchNodeError:
             self.HistTdcStatus = None
-        self.HistOcc = root.HistOcc
-        self.HistTot = root.HistTot
+        try:
+            self.HistOcc = root.HistOcc
+        except tb.NoSuchNodeError:
+            self.HistOcc = None
+        try:
+            self.HistTot = root.HistTot
+        except tb.NoSuchNodeError:
+            self.HistTot = None
         self.n_failed_scurves = 0
         if self.run_config['scan_id'] in ['threshold_scan', 'calibrate_tot', 'fast_threshold_scan', 'in_time_threshold_scan', 'autorange_threshold_scan', 'crosstalk_scan']:
-            self.ThresholdMap = root.ThresholdMap
-            self.Chi2Map = root.Chi2Map
-            self.NoiseMap = root.NoiseMap
-            self.n_failed_scurves = self._n_failed_scurves(full=True)
+            try:
+                self.ThresholdMap = root.ThresholdMap
+            except tb.NoSuchNodeError:
+                self.ThresholdMap = None
+            try:
+                self.Chi2Map = root.Chi2Map
+            except tb.NoSuchNodeError:
+                self.Chi2Map = None
+            try:
+                self.NoiseMap = root.NoiseMap
+            except tb.NoSuchNodeError:
+                self.NoiseMap = None
+            if self.HistOcc is not None and self.Chi2Map is not None:
+                self.n_failed_scurves = self._n_failed_scurves(full=True)
 
         if self.mask_noisy_pixels:
             noisy_pixels = np.where(self._hist_occ_sum(full=True) > self.mask_noisy_pixels)
@@ -171,7 +310,7 @@ class Plotting(object):
             pass
 
         try:
-            conversion_factors = au.ConfigDict(root.configuration_in.bench.electron_conversion[:])
+            conversion_factors = au.ConfigDict(self.config_root.bench.electron_conversion[:])
             start_column = self.scan_config['start_column']
             stop_column_exclusive = self.scan_config['stop_column']
             stop_column_inclusive = stop_column_exclusive - 1
@@ -213,14 +352,24 @@ class Plotting(object):
         except Exception:
             self.monitoring_group = None
 
+        if not self._has_plottable_payload():
+            if self.in_file is not None:
+                self.in_file.close()
+                self.in_file = None
+            raise ValueError(
+                'Interpreted data file is incomplete: no plot payload found '
+                '(expected datasets like HistOcc, HistTot, ThresholdMap, NoiseMap, Chi2Map, Cluster, or monitoring).'
+            )
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.out_file is not None and isinstance(self.out_file, PdfPages):
-            self.log.info('Closing output PDF file: {0}'.format(self.out_file._file.fh.name))
+            self.log.info('Closing output PDF file: {0}'.format(self.filename))
             self.out_file.close()
-            shutil.copyfile(self.filename, os.path.join(os.path.split(self.filename)[0], 'last_scan.pdf'))
+            if os.path.exists(self.filename):
+                shutil.copyfile(self.filename, os.path.join(os.path.split(self.filename)[0], 'last_scan.pdf'))
         if getattr(self, 'in_file', None) is not None:
             self.in_file.close()
         if self.notify:
@@ -229,6 +378,27 @@ class Plotting(object):
     def _full_matrix_required(self):
         """Return whether full-matrix maps are requested."""
         return self.map_output_config.get('full_matrix', True)
+
+    def _get_configuration_root(self, root):
+        """Return configuration_in if present, otherwise configuration_out."""
+        if hasattr(root, 'configuration_in'):
+            return root.configuration_in
+        if hasattr(root, 'configuration_out'):
+            return root.configuration_out
+        raise tb.NoSuchNodeError('Missing configuration_in/configuration_out in interpreted file')
+
+    def _has_plottable_payload(self):
+        """Return whether the file contains any actual plotting payload."""
+        return any([
+            self.HistOcc is not None,
+            self.HistTot is not None,
+            self.ThresholdMap is not None,
+            self.NoiseMap is not None,
+            self.Chi2Map is not None,
+            self.clustered,
+            self.monitoring_group is not None,
+            self.HistTdcStatus is not None,
+        ])
 
     def _scan_area_only_mode(self):
         """Return whether offline plotting only needs scan-area maps."""
@@ -385,14 +555,12 @@ class Plotting(object):
         stop_column = int(self.scan_config['stop_column'])
         start_row = int(self.scan_config['start_row'])
         stop_row = int(self.scan_config['stop_row'])
-        hist_scan_area = hist[start_row:stop_row, start_column:stop_column]
+        # Some callers already pass an ROI-cropped array; only slice again when
+        # the histogram still covers the full matrix.
+        roi_local = hist.shape == (stop_row - start_row, stop_column - start_column)
+        hist_scan_area = hist if roi_local else hist[start_row:stop_row, start_column:stop_column]
         old_plot_box_bounds = self.plot_box_bounds
-        self.plot_box_bounds = [
-            start_column + 0.5,
-            stop_column + 0.5,
-            stop_row + 0.5,
-            start_row + 0.5,
-        ]
+        self.plot_box_bounds = self._scan_area_plot_box_bounds()
         try:
             self._plot_occupancy(hist=hist_scan_area,
                                  suffix=suffix,
@@ -458,14 +626,12 @@ class Plotting(object):
         stop_column = int(self.scan_config['stop_column'])
         start_row = int(self.scan_config['start_row'])
         stop_row = int(self.scan_config['stop_row'])
-        hist_scan_area = hist[start_row:stop_row, start_column:stop_column]
+        # Accept both full-matrix maps and pre-cropped scan-area maps so the
+        # scan-area plotting helpers can be reused by BCID summary plots.
+        roi_local = hist.shape == (stop_row - start_row, stop_column - start_column)
+        hist_scan_area = hist if roi_local else hist[start_row:stop_row, start_column:stop_column]
         old_plot_box_bounds = self.plot_box_bounds
-        self.plot_box_bounds = [
-            start_column + 0.5,
-            stop_column + 0.5,
-            stop_row + 0.5,
-            start_row + 0.5,
-        ]
+        self.plot_box_bounds = self._scan_area_plot_box_bounds()
         try:
             self._plot_fancy_occupancy(hist=hist_scan_area,
                                        suffix=suffix,
@@ -588,6 +754,16 @@ class Plotting(object):
         ax.set_xticklabels([str(label) for label in x_labels])
         ax.set_yticklabels([str(label) for label in y_labels])
 
+    def _scan_area_plot_box_bounds(self):
+        # Match the legacy/full-matrix axis convention so scan-area plots show
+        # row/column labels like 0..512 instead of -1..511 at the boundaries.
+        return [
+            self.start_column + 0.5,
+            self.stop_column + 0.5,
+            self.stop_row + 0.5,
+            self.start_row + 0.5,
+        ]
+
     def _integer_colorbar_ticks(self, z_min, z_max):
         start = int(math.floor(z_min))
         stop = int(math.ceil(z_max))
@@ -647,58 +823,48 @@ class Plotting(object):
 
     def get_available_plot_specs(self):
         """Return the named plot steps available for the current file."""
+        function_names = {
+            'parameter_page': 'create_parameter_page',
+            'occupancy_map': 'create_occupancy_map',
+            'fancy_occupancy': 'create_fancy_occupancy',
+            'hit_pix': 'create_hit_pix_plot',
+            'tdac_plot': 'create_tdac_plot',
+            'tdac_map': 'create_tdac_map',
+            'tot_plot': 'create_tot_plot',
+            'tot_map': 'create_tot_map',
+            'tot_hist': 'create_tot_hist',
+            'scurves': 'create_scurves_plot',
+            'threshold_plot': 'create_threshold_plot',
+            'stacked_threshold': 'create_stacked_threshold_plot',
+            'threshold_map': 'create_threshold_map',
+            'noise_plot': 'create_noise_plot',
+            'noise_map': 'create_noise_map',
+            'cluster_tot': 'create_cluster_tot_plot',
+            'cluster_shape': 'create_cluster_shape_plot',
+            'cluster_size': 'create_cluster_size_plot',
+            'monitoring_summary': 'create_monitoring_summary_table',
+            'monitoring_main': 'create_monitoring_main_page',
+            'dac_linearity': 'create_dac_linearity_plot',
+        }
+        details = _available_plot_details_from_scan(
+            scan_id=self.run_config['scan_id'],
+            clustered=self.clustered,
+            has_tdc_status=False,
+            include_monitoring=self._monitoring_enabled_in_pdf(),
+            has_hist_occ=self.HistOcc is not None,
+            has_hist_tot=self.HistTot is not None,
+            has_threshold_map=self.ThresholdMap is not None,
+            has_noise_map=self.NoiseMap is not None,
+            has_chi2_map=self.Chi2Map is not None,
+            has_tdac=self.tdac_node is not None,
+        )
         specs = []
-        scan_id = self.run_config['scan_id']
-        if scan_id in ['dac_linearity_scan', 'adc_tuning']:
-            specs.extend([
-                ('parameter_page', 'Parameter page', self.create_parameter_page),
-                ('dac_linearity', 'DAC linearity', self.create_dac_linearity_plot),
-            ])
-            return specs
-
-        specs.append(('parameter_page', 'Parameter page', self.create_parameter_page))
-        specs.append(('occupancy_map', 'Occupancy map', self.create_occupancy_map))
-        if scan_id in SOURCE_LIKE_SCANS:
-            specs.append(('fancy_occupancy', 'Fancy occupancy', self.create_fancy_occupancy))
-        if scan_id in TOT_LIKE_SCANS:
-            specs.extend([
-                ('hit_pix', 'Hits per pixel', self.create_hit_pix_plot),
-                ('tdac_plot', 'TDAC distribution', self.create_tdac_plot),
-                ('tdac_map', 'TDAC map', self.create_tdac_map),
-                ('tot_plot', 'ToT distribution', self.create_tot_plot),
-                ('tot_map', 'ToT map', self.create_tot_map),
-            ])
-        if scan_id in THRESHOLD_LIKE_SCANS:
-            specs.extend([
-                ('tot_hist', 'ToT histogram', self.create_tot_hist),
-                ('scurves', 'S-curves', self.create_scurves_plot),
-                ('threshold_plot', 'Threshold distribution', self.create_threshold_plot),
-                ('stacked_threshold', 'Stacked threshold', self.create_stacked_threshold_plot),
-                ('threshold_map', 'Threshold map', self.create_threshold_map),
-                ('noise_plot', 'Noise distribution', self.create_noise_plot),
-                ('noise_map', 'Noise map', self.create_noise_map),
-            ])
-        if scan_id == 'global_threshold_tuning':
-            specs.extend([
-                ('scurves', 'S-curves', self.create_scurves_plot),
-                ('threshold_plot', 'Threshold distribution', self.create_threshold_plot),
-                ('threshold_map', 'Threshold map', self.create_threshold_map),
-                ('noise_plot', 'Noise distribution', self.create_noise_plot),
-                ('noise_map', 'Noise map', self.create_noise_map),
-            ])
-        if self.clustered:
-            specs.extend([
-                ('cluster_tot', 'Cluster ToT', self.create_cluster_tot_plot),
-                ('cluster_shape', 'Cluster shape', self.create_cluster_shape_plot),
-                ('cluster_size', 'Cluster size', self.create_cluster_size_plot),
-            ])
-        if self.HistTdcStatus is not None:
-            specs.append(('tdc_status', 'TDC status', self.create_tdc_status_plot))
-        if self._monitoring_enabled_in_pdf():
-            specs.extend([
-                ('monitoring_summary', 'Monitoring summary', self.create_monitoring_summary_table),
-                ('monitoring_main', 'Monitoring main page', self.create_monitoring_main_page),
-            ])
+        for plot_id, label in details:
+            func = getattr(self, function_names[plot_id], None)
+            if func is None:
+                self.log.warning('Skipping plot "%s": missing implementation %s', plot_id, function_names[plot_id])
+                continue
+            specs.append((plot_id, label, func))
         return specs
 
     def list_available_plots(self):
@@ -818,6 +984,52 @@ class Plotting(object):
         if 'z' in override:
             z_min, z_max = override['z']
         return z_min, z_max
+
+    def _scan_parameter_edges(self, scan_parameters):
+        """Return pcolormesh-ready bin edges from scan-parameter sample points."""
+        values = np.asarray(scan_parameters, dtype=float)
+        if values.ndim != 1 or values.size == 0:
+            raise ValueError('scan_parameters must be a non-empty 1D sequence')
+        if values.size == 1:
+            center = values[0]
+            return np.array([center - 0.5, center + 0.5], dtype=float)
+
+        deltas = np.diff(values)
+        inner_edges = values[:-1] + deltas / 2.0
+        first_edge = values[0] - deltas[0] / 2.0
+        last_edge = values[-1] + deltas[-1] / 2.0
+        return np.concatenate(([first_edge], inner_edges, [last_edge]))
+
+    def _scan_params_field(self, *candidate_names):
+        """Return a scan-parameter field name independent of HDF5 case normalization."""
+        if self.scan_params is None or self.scan_params.dtype.names is None:
+            return None
+        name_map = {name.lower(): name for name in self.scan_params.dtype.names}
+        for candidate in candidate_names:
+            match = name_map.get(candidate.lower())
+            if match is not None:
+                return match
+        return None
+
+    def _build_scan_parameter_range(self):
+        """Return the scan parameter values used on the x-axis of scan plots."""
+        vcal_low_field = self._scan_params_field('VCAL_LOW', 'vcal_low')
+        vcal_high_field = self._scan_params_field('VCAL_HIGH', 'vcal_high')
+        if vcal_low_field is not None and vcal_high_field is not None:
+            return np.array(self.scan_params[vcal_high_field] - self.scan_params[vcal_low_field], dtype=float)
+
+        if 'VCAL_LOW_start' in self.scan_config:
+            return [self.scan_config['VCAL_HIGH'] - v for v in
+                    range(self.scan_config['VCAL_LOW_start'],
+                          self.scan_config['VCAL_LOW_stop'] - 1,
+                          self.scan_config['VCAL_LOW_step'])]
+
+        if 'VTH_start' in self.scan_config:
+            return list(range(self.scan_config['VTH_start'],
+                              self.scan_config['VTH_stop'],
+                              -1 * self.scan_config['VTH_step']))
+
+        return None
 
     def _sanitize_distribution_data(self, data):
         data = np.ma.masked_invalid(np.ma.array(data, copy=False))
@@ -1104,13 +1316,12 @@ class Plotting(object):
                                                    title=title + ' scan area',
                                                    plot_kind='occupancy_with_projections')
                 else:
-                    self._plot_occupancy(hist=hist,
-                                         z_min=z_min,
-                                         z_max=z_max,
-                                         suffix='occupancy_scan_area',
-                                         title=title + ' scan area',
-                                         colorbar_scientific=True,
-                                         aspect='auto')
+                    self._plot_scan_area_map(hist=hist,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             suffix='occupancy_scan_area',
+                                             title=title + ' scan area',
+                                             colorbar_scientific=True)
                     self._plot_scan_area_map_tiles(hist=hist,
                                                    z_min=z_min,
                                                    z_max=z_max,
@@ -1367,17 +1578,16 @@ class Plotting(object):
                                                    colorbar_tick_count=6,
                                                    plot_kind='occupancy_with_projections')
                 else:
-                    self._plot_occupancy(hist=hist,
-                                         electron_axis=plot_electron_axis,
-                                         z_label=z_label,
-                                         title=title + ' scan area',
-                                         use_electron_offset=use_electron_offset,
-                                         show_sum=False,
-                                         z_min=z_min,
-                                         z_max=z_max,
-                                         suffix='threshold_map_scan_area',
-                                         colorbar_tick_count=6,
-                                         aspect='auto')
+                    self._plot_scan_area_map(hist=hist,
+                                             electron_axis=plot_electron_axis,
+                                             z_label=z_label,
+                                             title=title + ' scan area',
+                                             use_electron_offset=use_electron_offset,
+                                             show_sum=False,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             suffix='threshold_map_scan_area',
+                                             colorbar_tick_count=6)
                     self._plot_scan_area_map_tiles(hist=hist,
                                                    electron_axis=plot_electron_axis,
                                                    z_label=z_label,
@@ -1474,17 +1684,16 @@ class Plotting(object):
                                                    colorbar_tick_count=6,
                                                    plot_kind='occupancy_with_projections')
                 else:
-                    self._plot_occupancy(hist=hist,
-                                         electron_axis=plot_electron_axis,
-                                         use_electron_offset=False,
-                                         z_label=z_label,
-                                         z_min=z_min,
-                                         z_max=z_max,
-                                         title=title + ' scan area',
-                                         show_sum=False,
-                                         suffix='noise_map_scan_area',
-                                         colorbar_tick_count=6,
-                                         aspect='auto')
+                    self._plot_scan_area_map(hist=hist,
+                                             electron_axis=plot_electron_axis,
+                                             use_electron_offset=False,
+                                             z_label=z_label,
+                                             z_min=z_min,
+                                             z_max=z_max,
+                                             title=title + ' scan area',
+                                             show_sum=False,
+                                             suffix='noise_map_scan_area',
+                                             colorbar_tick_count=6)
                     self._plot_scan_area_map_tiles(hist=hist,
                                                    electron_axis=plot_electron_axis,
                                                    use_electron_offset=False,
@@ -1540,15 +1749,15 @@ class Plotting(object):
                                                    norm_projection=True,
                                                    suffix='tdac_map_scan_area')
                 else:
-                    self._plot_fancy_occupancy(hist=hist,
-                                               title='TDAC map scan area',
-                                               z_label='TDAC',
-                                               z_min=min(min_tdac, max_tdac),
-                                               z_max=max(min_tdac, max_tdac),
-                                               log_z=False,
-                                               centered_ticks=True,
-                                               norm_projection=True,
-                                               suffix='tdac_map_scan_area')
+                    self._plot_scan_area_fancy_map(hist=hist,
+                                                   title='TDAC map scan area',
+                                                   z_label='TDAC',
+                                                   z_min=min(min_tdac, max_tdac),
+                                                   z_max=max(min_tdac, max_tdac),
+                                                   log_z=False,
+                                                   centered_ticks=True,
+                                                   norm_projection=True,
+                                                   suffix='tdac_map_scan_area')
                     self._plot_scan_area_map_tiles(hist=hist,
                                                    title='TDAC map scan area',
                                                    z_label='TDAC',
@@ -1615,36 +1824,27 @@ class Plotting(object):
         try:
             if np.max(np.nonzero(self.HistClusterTot)) < 128:
                 plot_range = range(0, 128)
-                #plot_range = range(0, 50)
-                print('step1')
             else:
                 plot_range = range(0, np.max(np.nonzero(self.HistClusterTot)))
-                #plot_range = range(0, 50)
-                print('step2')
 
             #tot_calib_file = self.configuration['scan'].get('tot_calib_file', None)
 
             tot_calib_file = None
             #tot_calib_file ='/home/labb2/tj-monopix2-daq-development/tjmonopix2/scans/output_data/module_0/chip_0/20241212_162859_calibrate_tot_interpreted.h5'
-            print('tot_calib file ',tot_calib_file)
-            print('plot range ',plot_range)
             #plot_range = [x * self.electron_conversion for x in plot_range]
             #print('new range ',plot_range)
             if tot_calib_file is not None:
-                print('step3')
                 x_axis_title = 'Cluster charge [DAC]'
                 # x_axis_title = 'Cluster charge [e⁻]'
                 # plot_range = [x * self.electron_conversion for x in plot_range]
                 #plot_range = plot_range * self.electron_conversion
             else:
                 x_axis_title = 'Cluster ToT [25 ns]'
-                print('step4')
 
             self._plot_1d_hist(hist=self.HistClusterTot[:], title='Cluster ToT',
                                log_y=True, plot_range=plot_range,
                                x_axis_title=x_axis_title,
                                y_axis_title='# of clusters', suffix='cluster_tot')
-            print('step_last')
         except Exception:
             self.log.error('Could not create cluster TOT plot!')
 
@@ -1925,7 +2125,7 @@ class Plotting(object):
         if y_max is None:
             y_max = hist.shape[0]
 
-        x_bins = scan_parameters[:]  # np.arange(-0.5, max(scan_parameters) + 1.5)
+        x_bins = self._scan_parameter_edges(scan_parameters)
         y_bins = np.arange(-0.5, y_max + 0.5)
 
         fig = Figure()
@@ -2069,7 +2269,7 @@ class Plotting(object):
         max_occ = y_max + 2
         if self.run_config['scan_id'] == 'autorange_threshold_scan':
             max_occ = int(min(np.max(scurves) + 5, y_max + 2))
-        x_bins = scan_parameters  # np.arange(-0.5, max(scan_parameters) + 1.5)
+        x_bins = self._scan_parameter_edges(scan_parameters)
         y_bins = np.arange(-0.5, max_occ + 0.5)
 
         if scurves.shape[-1] == self.cols * self.rows:
@@ -2140,7 +2340,7 @@ class Plotting(object):
 
     def _plot_scurves_hist(self, hist, y_max, n_noisy_pixels, enabled_pixels_count, failed_fit_count, scan_parameters, electron_axis=False, scan_parameter_name=None, suffix='scurves', title='S-curves', ylabel='Occupancy'):
         """Render the S-curve summary histogram from a pre-accumulated histogram."""
-        x_bins = scan_parameters
+        x_bins = self._scan_parameter_edges(scan_parameters)
         y_bins = np.arange(-0.5, hist.shape[1] + 0.5)
 
         fig = Figure()
@@ -2469,3 +2669,368 @@ class Plotting(object):
         ax.set_ylim(ymin=1e-1)
 
         self._save_plots(fig, suffix='cluster_shape')
+
+
+def _bcid_valid_values(data, valid_mask):
+    return np.asarray(data[valid_mask], dtype=float)
+
+
+def _bcid_map_limits(data, valid_mask, symmetric=False):
+    values = _bcid_valid_values(data, valid_mask)
+    if values.size == 0:
+        return 0.0, 1.0
+    vmin = float(np.nanmin(values))
+    vmax = float(np.nanmax(values))
+    if symmetric:
+        limit = max(abs(vmin), abs(vmax))
+        if limit == 0.0:
+            limit = 1.0
+        return -limit, limit
+    if vmin == vmax:
+        vmax = vmin + 1.0
+    return vmin, vmax
+
+
+def _bcid_create_summary_page(pdf, summary_payload):
+    fig = Figure(figsize=(11.0, 8.5))
+    _ = FigureCanvas(fig)
+    axes = [fig.add_subplot(3, 1, idx + 1) for idx in range(3)]
+
+    pulse_values = np.asarray(summary_payload['pulse_start_values'], dtype=int)
+    threshold_mean = np.asarray([result['threshold_mean'] for result in summary_payload['scan_results']], dtype=float)
+    threshold_std = np.asarray([result['threshold_std'] for result in summary_payload['scan_results']], dtype=float)
+    noise_mean = np.asarray([result['noise_mean'] for result in summary_payload['scan_results']], dtype=float)
+
+    min_pulse = summary_payload['min_threshold_result']['pulse_start_cnfg']
+    max_pulse = summary_payload['max_threshold_result']['pulse_start_cnfg']
+
+    plots = [
+        (axes[0], threshold_mean, 'Average threshold vs PulseStartCnfg', 'Average threshold'),
+        (axes[1], threshold_std, 'Threshold dispersion vs PulseStartCnfg', 'Threshold dispersion'),
+        (axes[2], noise_mean, 'Average noise vs PulseStartCnfg', 'Average noise'),
+    ]
+
+    for ax, values, title, ylabel in plots:
+        ax.plot(pulse_values, values, marker='o', color=TITLE_COLOR, linewidth=1.8)
+        ax.axvline(min_pulse, color='tab:green', linestyle='--', linewidth=1.0, label=f'min thr pulse = {min_pulse}')
+        ax.axvline(max_pulse, color='tab:red', linestyle='--', linewidth=1.0, label=f'max thr pulse = {max_pulse}')
+        ax.set_title(title, color=TITLE_COLOR)
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best', fontsize=8)
+
+    axes[-1].set_xlabel('PulseStartCnfg')
+    fig.suptitle('BCID phase summary', color=TITLE_COLOR, fontsize=16)
+    fig.text(0.02, 0.01,
+             f'Min-threshold pulse start: {min_pulse}    Max-threshold pulse start: {max_pulse}',
+             color=OVERTEXT_COLOR, fontsize=10)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _bcid_create_parameter_page(pdf, summary_payload):
+    fig = Figure()
+    _ = FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+
+    run_config = summary_payload.get('run_config', {})
+    scan_config = OrderedDict(summary_payload.get('scan_config', {}))
+    pulse_start_values = summary_payload.get('pulse_start_values', [])
+
+    scan_id = run_config.get('scan_id', 'bcid_phase_scan')
+    run_name = run_config.get('run_name', 'unknown_run')
+    chip_sn = run_config.get('chip_sn', run_config.get('module', 'unknown_chip'))
+    sw_ver = run_config.get('software_version', 'unknown')
+
+    try:
+        timestamp = datetime.datetime.strptime(' '.join(run_name.split('_')[:2]), '%Y%m%d %H%M%S')
+    except Exception:
+        timestamp = run_name
+
+    text = f'This is a TJ-Monopix2 {scan_id} summary for chip {chip_sn}.\nRun {run_name} was started {timestamp}.'
+    ax.text(0.01, 0.92, text, fontsize=10)
+    ax.text(-0.1, -0.11, f'Software version: {sw_ver}', fontsize=3)
+
+    summary_config = OrderedDict()
+    for key, value in scan_config.items():
+        summary_config[key] = value
+    summary_config['pulse_start_values'] = ', '.join(str(value) for value in pulse_start_values)
+
+    rows = [[str(key), str(value)] for key, value in summary_config.items()]
+    table = ax.table(
+        cellText=rows,
+        colWidths=[0.35, 0.60],
+        colLabels=['Setting', 'Value'],
+        cellLoc='left',
+        loc='center',
+    )
+    table.scale(1.0, 1.05)
+    table.auto_set_font_size(False)
+    for key, cell in table.get_celld().items():
+        cell.set_fontsize(6)
+        if key[0] == 0:
+            cell.set_color('#ffb300')
+            cell.set_fontsize(7)
+
+    ax.set_title('BCID phase settings', fontsize=10)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _bcid_create_map_page(pdf, data, valid_mask, title, z_label, cmap='viridis', symmetric=False, footer=None, scan_config=None):
+    fig = Figure(figsize=(10.0, 8.0))
+    _ = FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+
+    array = np.asarray(data, dtype=float)
+    mask = np.asarray(valid_mask, dtype=bool)
+    x_start = 0
+    x_stop = array.shape[0] - 1
+    y_start = 0
+    y_stop = array.shape[1] - 1
+    if scan_config is not None:
+        # Crop to the scanned ROI before plotting so the BCID summary pages show
+        # the same coordinates and footprint as the underlying threshold scans.
+        x_start = int(scan_config['start_column'])
+        x_stop = int(scan_config['stop_column']) - 1
+        y_start = int(scan_config['start_row'])
+        y_stop = int(scan_config['stop_row']) - 1
+        col_slice = slice(x_start, x_stop + 1)
+        row_slice = slice(y_start, y_stop + 1)
+        array = array[col_slice, row_slice]
+        mask = mask[col_slice, row_slice]
+    masked = np.ma.masked_array(array.T, mask=np.logical_not(mask).T)
+    vmin, vmax = _bcid_map_limits(array, mask, symmetric=symmetric)
+    extent = [x_start - 0.5, x_stop + 0.5, y_start - 0.5, y_stop + 0.5]
+    image = ax.imshow(masked, origin='lower', aspect='auto', interpolation='nearest', cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
+    ax.set_title(title, color=TITLE_COLOR)
+    ax.set_xlabel('Column in scan area')
+    ax.set_ylabel('Row in scan area')
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    _bcid_set_pixel_axis_ticks(ax, x_start, x_stop, y_start, y_stop)
+    colorbar = fig.colorbar(image, ax=ax, pad=0.01)
+    colorbar.set_label(z_label)
+    if footer:
+        fig.text(0.02, 0.01, footer, color=OVERTEXT_COLOR, fontsize=9)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _bcid_set_pixel_axis_ticks(ax, x_start, x_stop, y_start, y_stop):
+    def build_ticks(start, stop):
+        span = max(0, stop - start)
+        if span >= 512:
+            step = 64
+        elif span >= 256:
+            step = 64
+        elif span >= 128:
+            step = 32
+        elif span >= 64:
+            step = 16
+        elif span >= 32:
+            step = 8
+        elif span >= 16:
+            step = 4
+        elif span >= 8:
+            step = 2
+        else:
+            step = 1
+        labels = list(range(start, stop + 1, step))
+        if not labels or labels[0] != start:
+            labels.insert(0, start)
+        if labels[-1] != stop:
+            labels.append(stop)
+        positions = labels
+        return positions, labels
+
+    x_positions, x_labels = build_ticks(x_start, x_stop)
+    y_positions, y_labels = build_ticks(y_start, y_stop)
+    ax.xaxis.set_major_locator(FixedLocator(x_positions))
+    ax.yaxis.set_major_locator(FixedLocator(y_positions))
+    ax.set_xticklabels([str(label) for label in x_labels])
+    ax.set_yticklabels([str(label) for label in y_labels])
+
+
+def _bcid_create_monitoring_summary_page(pdf, summary_payload):
+    monitoring_tables = summary_payload.get('monitoring_tables', {})
+    rows = []
+    for table_name in ('env', 'power'):
+        table = monitoring_tables.get(table_name)
+        ts, series, label_map, unit_map = _bcid_read_monitoring_table(table) if table else (np.array([]), {}, {}, {})
+        if ts.size == 0:
+            continue
+        label_to_unit = {}
+        for field, label in label_map.items():
+            label_to_unit[label] = unit_map.get(field, '')
+        for label, values in series.items():
+            keep = False
+            if 'NTC' in label:
+                keep = True
+            if label in ['HV_V', 'HV_I', 'PWELL_V', 'PWELL_I', 'PSUB_PWELL_V', 'PSUB_PWELL_I']:
+                keep = True
+            if not keep:
+                continue
+            finite = np.isfinite(values)
+            if not np.any(finite):
+                continue
+            rows.append([
+                label,
+                f'{np.nanmean(values):.3g}',
+                f'{np.nanmin(values):.3g}',
+                f'{np.nanmax(values):.3g}',
+                str(label_to_unit.get(label, '')),
+            ])
+
+    if not rows:
+        return
+
+    fig = Figure()
+    _ = FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+    ax.axis('off')
+    table = ax.table(
+        cellText=rows,
+        colWidths=[0.40, 0.15, 0.15, 0.15, 0.10],
+        colLabels=['Attribute', 'Mean', 'Min', 'Max', 'Unit'],
+        cellLoc='left',
+        loc='center',
+    )
+    table.scale(1.0, 1.0)
+    table.auto_set_font_size(False)
+    for key, cell in table.get_celld().items():
+        cell.set_fontsize(6)
+        if key[0] == 0:
+            cell.set_color('#ffb300')
+            cell.set_fontsize(7)
+
+    ax.set_title('Monitoring summary (full BCID time window)', fontsize=10)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _bcid_read_monitoring_table(table):
+    data = table.get('data')
+    if data is None or len(data) == 0:
+        return np.array([]), {}, {}, {}
+
+    label_map = table.get('label_map', {})
+    unit_map = table.get('unit_map', {})
+    ts = data['timestamp']
+    series = {}
+    for field in data.dtype.names:
+        if field == 'timestamp':
+            continue
+        label = label_map.get(field, field)
+        series[label] = data[field]
+
+    return ts, series, label_map, unit_map
+
+
+def _bcid_plot_monitoring_page(pdf, table, title, ylabel, selector, suffix_note=None):
+    ts, series, _, _ = _bcid_read_monitoring_table(table)
+    if ts.size == 0 or not series:
+        return
+
+    fig = Figure(figsize=(10.5, 7.5))
+    _ = FigureCanvas(fig)
+    ax = fig.add_subplot(111)
+    t0 = ts[0]
+    time_s = ts - t0
+    plotted = False
+    for label, values in series.items():
+        if selector(label):
+            ax.plot(time_s, values, label=label)
+            plotted = True
+    if not plotted:
+        return
+
+    ax.set_title(title, color=TITLE_COLOR)
+    ax.set_xlabel('Time since BCID scan start [s]')
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, loc='best')
+    if suffix_note:
+        fig.text(0.02, 0.01, suffix_note, color=OVERTEXT_COLOR, fontsize=9)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _bcid_create_monitoring_pages(pdf, summary_payload):
+    monitoring_tables = summary_payload.get('monitoring_tables', {})
+    power_table = monitoring_tables.get('power')
+    env_table = monitoring_tables.get('env')
+
+    if power_table:
+        _bcid_plot_monitoring_page(
+            pdf,
+            table=power_table,
+            title='HV current over full BCID phase scan',
+            ylabel='Current [A]',
+            selector=lambda label: label == 'HV_I' or label.replace(' ', '') == 'HV_I' or label.replace(' ', '').replace('-', '').replace('_', '').upper() == 'HVI',
+        )
+        _bcid_plot_monitoring_page(
+            pdf,
+            table=power_table,
+            title='PWELL and PSUB-PWELL currents over full BCID phase scan',
+            ylabel='Current [A]',
+            selector=lambda label: label in ['PWELL_I', 'PSUB_PWELL_I'] or label.replace(' ', '').replace('-', '').replace('_', '').upper() in {'PWELLI', 'PSUBPWELLI', 'PSUBI'},
+        )
+
+    if env_table:
+        _bcid_plot_monitoring_page(
+            pdf,
+            table=env_table,
+            title='Monitoring temperature over full BCID phase scan',
+            ylabel='Temperature [°C]',
+            selector=lambda label: 'NTC' in label or 'TEMP' in label.upper(),
+        )
+
+
+def create_bcid_phase_summary_pdf(summary_payload, pdf_file):
+    directory = os.path.dirname(pdf_file)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with PdfPages(pdf_file) as pdf:
+        _bcid_create_parameter_page(pdf, summary_payload)
+        _bcid_create_summary_page(pdf, summary_payload)
+        _bcid_create_monitoring_summary_page(pdf, summary_payload)
+        if summary_payload.get('has_effective_maps', False):
+            # Effective maps are derived from the min-threshold and max-threshold
+            # pulse settings to visualize the BCID-dependent spread in response.
+            min_pulse = summary_payload['min_threshold_result']['pulse_start_cnfg']
+            max_pulse = summary_payload['max_threshold_result']['pulse_start_cnfg']
+            common_valid_mask = summary_payload['common_valid_mask']
+
+            _bcid_create_map_page(
+                pdf,
+                data=summary_payload['delta_threshold_map'],
+                valid_mask=common_valid_mask,
+                title=f'Delta threshold map (pulse {max_pulse} - pulse {min_pulse})',
+                z_label='Delta threshold',
+                cmap='coolwarm',
+                symmetric=True,
+                scan_config=summary_payload.get('scan_config'),
+            )
+            _bcid_create_map_page(
+                pdf,
+                data=summary_payload['threshold_effective_map'],
+                valid_mask=common_valid_mask,
+                title=f'Threshold effective map (midpoint of pulse {min_pulse} and pulse {max_pulse})',
+                z_label='Threshold effective',
+                cmap='viridis',
+                scan_config=summary_payload.get('scan_config'),
+            )
+            _bcid_create_map_page(
+                pdf,
+                data=summary_payload['noise_effective_map'],
+                valid_mask=common_valid_mask,
+                title=f'Noise effective map using mean noise and delta threshold',
+                z_label='Noise effective',
+                cmap='magma',
+                footer='Noise effective = sqrt(noise_mean^2 + (DeltaThreshold / 2)^2)',
+                scan_config=summary_payload.get('scan_config'),
+            )
+        _bcid_create_monitoring_pages(pdf, summary_payload)

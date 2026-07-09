@@ -70,7 +70,9 @@ NO_AXIS_OVERRIDE_PLOTS = {'parameter_page', 'monitoring_summary', 'cluster_shape
 # }
 plot_config = {
     'exclude_plots': [],
-    'axis_ranges': {},
+    'axis_ranges': {
+        'tot_hist': {'x': (0, 140), 'y': (0, 40)},
+    },
     'map_splits': None,
     'map_views': {'full_matrix': False, 'scan_area': True},
     'list_plots': False,
@@ -203,23 +205,13 @@ def main():
     input_files = _resolve_input_files(args.files, input_directory)
 
     first_file = input_files[0]
-    with plotting.Plotting(
-        analyzed_data_file=str(first_file),
-        pdf_file=str(_resolve_pdf_path(first_file)),
-        notify=False,
-        show_progress=True,
-        axis_ranges=config['axis_ranges'],
-        map_split_config=config['map_splits'],
-        map_output_config=config['map_views'],
-        create_output=False,
-    ) as plotter:
-        if config['list_plots']:
-            print('Available plots:')
-            print('  plot id              label                           axis override')
-            for plot_id, label in plotter.list_available_plot_details():
-                axis_info = _axis_override_description(plot_id)
-                print(f'  {plot_id:<20} {label:<30} {axis_info}')
-            return
+    if config['list_plots']:
+        print('Available plots:')
+        print('  plot id              label                           axis override')
+        for plot_id, label in plotting.list_available_plot_details_from_file(str(first_file)):
+            axis_info = _axis_override_description(plot_id)
+            print(f'  {plot_id:<20} {label:<30} {axis_info}')
+        return
 
     for input_file in input_files:
         pdf_path = _resolve_pdf_path(input_file)
@@ -228,16 +220,19 @@ def main():
             continue
 
         print(f'Plotting: {input_file.name}')
-        with plotting.Plotting(
-            analyzed_data_file=str(input_file),
-            pdf_file=str(pdf_path),
-            notify=False,
-            show_progress=True,
-            axis_ranges=config['axis_ranges'],
-            map_split_config=config['map_splits'],
-            map_output_config=config['map_views'],
-        ) as plotter:
-            plotter.create_selected_plots(selected_plots=selected_plots)
+        try:
+            with plotting.Plotting(
+                analyzed_data_file=str(input_file),
+                pdf_file=str(pdf_path),
+                notify=False,
+                show_progress=True,
+                axis_ranges=config['axis_ranges'],
+                map_split_config=config['map_splits'],
+                map_output_config=config['map_views'],
+            ) as plotter:
+                plotter.create_selected_plots(selected_plots=selected_plots)
+        except Exception as exc:
+            print(f'Could not plot {input_file.name}: {exc}')
 
 
 if __name__ == '__main__':

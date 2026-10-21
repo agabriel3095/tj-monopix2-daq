@@ -10,6 +10,7 @@ import logging
 import multiprocessing as mp
 import warnings
 from functools import partial
+import os
 
 import numba
 import numpy as np
@@ -486,3 +487,15 @@ def _fit_tot_response(data, scan_params):
         return (0., 0., 0., 0.)
 
     return (*popt, chi2 / (y.shape[0] - 3 - 1))
+
+def find_latest_file(directory: str, partial_name: str) -> str | None:
+    """Return the most recent file in a directory whose name contains a token."""
+    files = [
+        os.path.join(directory, name)
+        for name in os.listdir(directory)
+        if partial_name in name and os.path.isfile(os.path.join(directory, name))
+    ]
+    if not files:
+        print("No files found with the specified name part.")
+        return None
+    return max(files, key=os.path.getctime)

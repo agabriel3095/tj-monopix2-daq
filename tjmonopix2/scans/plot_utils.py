@@ -9,9 +9,12 @@ import matplotlib.colors
 from matplotlib.ticker import MaxNLocator
 import numpy as np
 import tables as tb
+import yaml
+import os.path as path
+
 
 __all__ = [
-    'FRONTENDS', 'TDAC_CMAP', 'get_config_dict', 'split_long_text',
+    'FRONTENDS', 'TDAC_CMAP', 'get_block_matrix', 'get_config_dict', 'split_long_text',
     'get_commit', 'draw_summary', 'set_integer_ticks',
     'integer_ticks_colorbar', 'frontend_names_on_top', 'groupwise',
     'is_single_hit_event']
@@ -23,7 +26,46 @@ FRONTENDS = [
     (448, 479, 'HV Casc.'),
     (480, 511, 'HV')]
 
+
 TDAC_CMAP = mpl.colors.ListedColormap([mpl.cm.viridis(x/7) for x in range(8)])
+
+def get_block_matrix(mat, dx=1, dy=1, f=np.mean, mask=None):
+    # Ensure that the matrix dimensions are multiple of the dividers set
+    nx, ny = mat.shape
+    if nx % dx != 0 or ny % dy != 0:
+        raise ValueError("Matrix dimensions not multiple of the dividers set.")
+
+    # Collect blocks
+    blocks = []
+    blocks_mask = []
+    blocks_masked = []
+    for j in range(0, ny, dy):  # dy rows step
+        for i in range(0, nx, dx):  # dx columns step
+            blocks.append(mat[i:i+dx, j:j+dy])
+            if mask is None:
+                continue
+            else:
+                blocks_mask.append(mask[i:i+dx, j:j+dy])
+                blocks_masked.append(blocks[-1][blocks_mask[-1]])
+
+    # Apply function to blocks
+    bl_mat = []
+    bl_mat_masked = []
+    for i in range(0, len(blocks), nx//dx):  # Iterate over rows
+        row = [f(blocks[i+j]) for j in range(nx//dx)]
+        bl_mat.append(row)
+        row_masked = []
+        if mask is None:
+            continue
+        else:
+            for j in range(nx//dx):
+                if len(blocks_masked[i+j])> 0:
+                    row_masked.append(f(blocks_masked[i+j]))
+                else:
+                    row_masked.append(0)
+        bl_mat_masked.append(row_masked)
+
+    return np.array(bl_mat), np.array(bl_mat_masked)
 
 
 def get_config_dict(h5_file):
@@ -38,7 +80,7 @@ def get_config_dict(h5_file):
         with tb.open_file(h5_file) as f:
             return get_config_dict(f)
     res = {}
-    for cfg_path in ['configuration_in', 'configuration_out']:
+    for cfg_path in ['configuration_out']:
         try:
             for node in h5_file.walk_nodes(f"/{cfg_path}"):
                 if isinstance(node, tb.Table):
@@ -49,8 +91,7 @@ def get_config_dict(h5_file):
                     except Exception:
                         pass  # print("Could not read node", node._v_pathname)
         except tb.NoSuchNodeError:
-            if cfg_path == 'configuration_in':
-                print("WARNING Input file does not have", cfg_path, "(incomplete acquisition?)")
+            print("WARNING Input file does not have", cfg_path, "(incomplete acquisition?)")
         except Exception:
             print("WARNING Could not read", cfg_path, "from input file (incomplete acquisition?)")
     return res
@@ -106,19 +147,19 @@ def draw_summary(input_file_path, cfg):
     plt.annotate(
         split_long_text(
             f"{os.path.abspath(input_file_path)}\n"
-            f"Chip =  {cfg.get('configuration_in.chip.settings.chip_sn')}\n"
+            f"Chip =  {cfg.get('configuration_out.chip.settings.chip_sn')}\n"
             f"Script version = {get_commit()}\n\n"
             + ", ".join(
-                f"{r} = {cfg.get(f'configuration_out.chip.registers.{r}', cfg.get(f'configuration_in.chip.registers.{r}'))}"
+                f"{r} = {cfg.get(f'configuration_out.chip.registers.{r}')}"
                 for r in [
                     "IBIAS", "ITHR", "ICASN", "IDB", "ITUNE", "VRESET", "VCASP",
                     "VCASC", "VCLIP", "VL", "VH", "ICOMP", "IDEL", "IRAM",
                     "FREEZE_START_CONF", "READ_START_CONF", "READ_STOP_CONF",
                     "LOAD_CONF", "FREEZE_STOP_CONF", "STOP_CONF"])
-            + f"\n\n{cfg.get('configuration_in.scan.run_config.scan_id')}\n"
+            + f"\n\n{cfg.get('configuration_out.scan.run_config.scan_id')}\n"
             + ", ".join(
                 f"{x.split('.')[-1]} = {cfg[x]}" for x in cfg.keys()
-                if x.startswith("configuration_in.scan.scan_config."))
+                if x.startswith("configuration_out.scan.scan_config."))
         ), (0.5, 0.5), ha='center', va='center')
     plt.gca().set_axis_off()
 

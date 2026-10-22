@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tables as tb
 from tqdm import tqdm
-from plot_utils_pisa import *
+from plot_utils import *
 
 
 def main(input_files, overwrite=False, log_tot=False, output_file=None):

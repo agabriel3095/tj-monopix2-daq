@@ -15,8 +15,7 @@ from scipy.special import erf
 import tables as tb
 from tqdm import tqdm
 from uncertainties import ufloat
-from plot_utils_pisa import *
-from plot_utils_pisa_gu import get_block_matrix,export_mask_yaml
+from plot_utils import *
 import tjmonopix2.analysis.analysis_utils as au
 
 VIRIDIS_WHITE_UNDER = matplotlib.cm.get_cmap('viridis').copy()
@@ -346,7 +345,7 @@ def main(input_file, overwrite=False, no_fit=False):
         thr_gen[col_start:col_stop,row_start:row_stop] = threshold_DAC
         low_thr_pixels = thr_gen < 0 # Create a matrix of False
         low_thr_pixels[enable_mask] = thr_gen[enable_mask] < th_min
-        export_mask_yaml(input_file,low_thr_pixels,os.path.splitext(input_file)[0],thr_gen)
+        au.export_mask_yaml(input_file,os.path.dirname(input_file),low_thr_pixels,thr_gen,th_min,os.path.splitext(os.path.basename(input_file))[0])
         au.list_pixels(threshold_DAC, c_start=col_start, r_start=row_start, high_bound=th_min)
         au.list_pixels(noise_DAC, c_start=col_start, r_start=row_start, low_bound=4)
 

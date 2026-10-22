@@ -260,89 +260,6 @@ def plot_occ_histograms(map_data, mask_out, props, basename, output_dir):
     plt.close(fig)
 
 
-def export_mask_yaml(path_h5, basepath, noisy_pixels, occ, clim, measurement):
-    """Export masked/noisy pixels to YAML for later reuse."""
-    masked_pixels = []
-    run_config = {}
-    chip_settings = {}
-
-    with tb.open_file(path_h5, 'r') as in_file:
-        # Interpreted files always contain configuration_in.
-        # Some of them also keep configuration_out, but not all scan types do.
-        if hasattr(in_file.root, 'configuration_in'):
-            if hasattr(in_file.root.configuration_in, 'scan') and hasattr(in_file.root.configuration_in.scan, 'run_config'):
-                run_config = table_to_dict(in_file.root.configuration_in.scan.run_config)
-            if hasattr(in_file.root.configuration_in, 'chip') and hasattr(in_file.root.configuration_in.chip, 'settings'):
-                chip_settings = table_to_dict(in_file.root.configuration_in.chip.settings)
-
-        if hasattr(in_file.root, 'configuration_in') and hasattr(in_file.root.configuration_in.chip, 'use_pixel'):
-            pixel_mask = in_file.root.configuration_in.chip.use_pixel[:]
-            config_node_name = 'configuration_in'
-        elif hasattr(in_file.root, 'configuration_out') and hasattr(in_file.root.configuration_out.chip, 'use_pixel'):
-            pixel_mask = in_file.root.configuration_out.chip.use_pixel[:]
-            config_node_name = 'configuration_out'
-        else:
-            raise NoSuchNodeError('Could not find chip.use_pixel in configuration_in or configuration_out')
-
-    disabled_pixels = np.array(np.where(pixel_mask == False))
-
-    print(f'--- Masked pixel from {config_node_name}.chip.use_pixel in ---', path_h5)
-    print('[row,col]')
-    for i in range(np.shape(disabled_pixels)[1]):
-        row = disabled_pixels[1, i]
-        col = disabled_pixels[0, i]
-        masked_pixels.append({'row': int(row), 'col': int(col), 'hits': 999999.0})
-
-    for row in range(512):
-        for col in range(512):
-            if noisy_pixels[col, row]:
-                masked_pixels.append({'row': row, 'col': col, 'hits': float(occ[col, row])})
-
-    positive_occ = occ[occ > 0]
-    median_hits = float(np.median(positive_occ)) if positive_occ.size else 0.0
-    std_hits = float(np.std(positive_occ)) if positive_occ.size else 0.0
-    cutoff = None if clim is None else float(clim)
-    scan_time = extract_scan_time(path_h5)
-    chip_name = chip_settings.get('chip_sn') or run_config.get('chip_sn') or run_config.get('chip_id') or 'unknown_chip'
-
-    output = {
-        'measurement': measurement,
-        'scan_time': scan_time,
-        'chip': chip_name,
-        'median_hits': median_hits,
-        'std_hits': std_hits,
-        'cutoff': cutoff,
-        'masked_pixels': masked_pixels,
-    }
-    output_paths = [
-        path.join(basepath, 'masked_pixels.yaml'),
-        path.join(basepath, f'masked_pixels_{sanitize_filename_token(scan_time)}_{sanitize_filename_token(chip_name)}.yaml'),
-    ]
-    for output_path in dict.fromkeys(output_paths):
-        with open(output_path, 'w') as outfile:
-            yaml.dump(output, outfile, default_flow_style=False, sort_keys=False)
-
-
-def extract_scan_time(file_path):
-    """Extract YYYYMMDD_HHMMSS from a scan filename."""
-    match = re.search(r'(\d{8}_\d{6})', path.basename(file_path))
-    return match.group(1) if match else 'unknown_time'
-
-
-def sanitize_filename_token(value):
-    """Return a metadata value that is safe to use in a filename."""
-    token = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value)).strip('_')
-    return token or 'unknown'
-
-
-def table_to_dict(table_item, key_name='attribute', value_name='value'):
-    """Convert a PyTables config table into a plain Python dictionary."""
-    ret = {}
-    for row in table_item.iterrows():
-        ret[row[key_name].decode('UTF-8')] = row[value_name].decode('UTF-8')
-    return ret
-
-
 def prepare_output_directory(path_h5, force=True):
     """Create or refresh the directory where PNG plots are written."""
     output_dir = path_h5.rsplit('_interpreted.h5')[0]
@@ -370,8 +287,8 @@ def plot_from_file(path_h5, output_dir, clim):
         hist_tot = read_integrated_hist_tot(h5file)
         avg_tot = calculate_mean_tot_map(hist_tot)
 
-        scan_config = table_to_dict(h5file.root.configuration_in.scan.scan_config)
-        run_config = table_to_dict(h5file.root.configuration_in.scan.run_config)
+        scan_config = au.table_to_dict(h5file.root.configuration_in.scan.scan_config)
+        run_config = au.table_to_dict(h5file.root.configuration_in.scan.run_config)
     except NoSuchNodeError:
         print('error in reading h5 file: probably not complete')
         return
@@ -430,7 +347,7 @@ def plot_from_file(path_h5, output_dir, clim):
     }
     plot_tot_histograms(hist_tot, noisy_pixels, prop_hist, basename, output_dir)
     plot_occ_histograms(hist_occ, noisy_pixels, prop_hist, basename, output_dir)
-    export_mask_yaml(path_h5, output_dir, noisy_pixels, hist_occ_original, clim, basename)
+    au.export_mask_yaml(path_h5, output_dir, noisy_pixels, hist_occ_original, clim, basename)
 
 
 def interpret_raw_file(raw_file: str, force: bool) -> str | None:

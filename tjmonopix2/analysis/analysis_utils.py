@@ -499,3 +499,24 @@ def find_latest_file(directory: str, partial_name: str) -> str | None:
         print("No files found with the specified name part.")
         return None
     return max(files, key=os.path.getctime)
+
+
+@np.errstate(all='ignore')
+def average(a, axis=None, weights=1, invalid=np.nan):
+    """Like np.average, but returns `invalid` instead of crashing if the sum of weights is zero."""
+    return np.nan_to_num(np.sum(a * weights, axis=axis).astype(float) / np.sum(weights, axis=axis).astype(float), nan=invalid)
+
+
+def s_curve(x, mu, sigma):
+    return 0.5 + 0.5 * erf((x - mu) / np.sqrt(2) / sigma)
+
+
+def list_pixels(list_DAC, c_start=0, r_start=0, low_bound=0, high_bound=100, n_pixels=10, var="THR"):
+    pixel_mask = list(zip(*np.nonzero((low_bound < list_DAC) & (list_DAC < high_bound))))
+    print(f"\nFirst {n_pixels} pixels with {low_bound} < {var} < {high_bound}")
+    print(f"Total number: {len(pixel_mask)}")
+    for i, (col, row) in enumerate(pixel_mask):
+       if i >= n_pixels:
+           break
+       print(f"    ({col+c_start:3d}, {row+r_start:3d}), THR = {list_DAC[col,row]}")
+

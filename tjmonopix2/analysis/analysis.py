@@ -450,8 +450,6 @@ class Analysis(object):
                         # Create actual cluster hists
                         cs_size = np.bincount(cluster['size'], minlength=30)[:30]
                         cs_tot = np.bincount(cluster['tot'], minlength=cs_tot_size)[:cs_tot_size]
-                        # cs_tot = np.bincount(cluster['tot'], minlength=256)[:256]
-                        # cs_tot = np.bincount(cluster['tot'], minlength=512)[:512]
                         sel = np.logical_and(cluster['cluster_shape'] > 0, cluster['cluster_shape'] < 300)
                         cs_shape = np.bincount(cluster['cluster_shape'][sel], minlength=300)[:300]
                         # Add to total hists
@@ -471,15 +469,6 @@ class Analysis(object):
     def _create_additional_hit_data(self):
         with tb.open_file(self.analyzed_data_file, 'r+') as out_file:
             scan_id = self.run_config['scan_id']
-
-            # if self.analyze_tdc:  # Only store if TDC analysis is used.
-            #     out_file.create_carray(out_file.root,
-            #                            name='HistTdcStatus',
-            #                            title='Tdc status Histogram',
-            #                            obj=hist_tdc_status,
-            #                            filters=tb.Filters(complib='blosc',
-            #                                               complevel=5,
-            #                                               fletcher32=False))
 
             if scan_id in ['threshold_scan', 'calibrate_tot', 'autorange_threshold_scan']:
                 n_injections = self.scan_config['n_injections']

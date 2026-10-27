@@ -206,7 +206,7 @@ class Plotting(object):
             self.monitoring_group = None
 
         try:
-            in_file.close()
+            self.in_file.close()
         except Exception:
             pass
 

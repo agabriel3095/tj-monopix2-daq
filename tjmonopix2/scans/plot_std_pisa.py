@@ -14,6 +14,11 @@ import tables as tb
 from tqdm import tqdm
 from plot_utils import *
 
+SEL_PIX_MASK_COLS = [287, 295]
+SEL_PIX_MASK_ROWS = [287, 295]
+MATRIX_DIVIDERS = [32,1]
+ZOOM_STEP = 64
+MAX_RATE = 0.001  # Above this rate [Hz] pixels are marked noisy
 
 def main(input_files, overwrite=False, log_tot=False, output_file=None):
     if output_file is None:
@@ -32,11 +37,23 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
     cfg = []
     tdac = []
     n_total_hits = 0
+    thr_map = []
+    scan_config = []
+    enable_mask = []
 
     for input_file in tqdm(input_files, disable=len(input_files)<2):
         print("Processing", input_file)
         with tb.open_file(input_file) as f:
             cfg.append(get_config_dict(f))
+            cf = int(cfg[0]['configuration_out.scan.scan_config.start_column'])
+            cl = int(cfg[0]['configuration_out.scan.scan_config.stop_column'])
+            rf = int(cfg[0]['configuration_out.scan.scan_config.start_row'])
+            rl = int(cfg[0]['configuration_out.scan.scan_config.stop_row'])
+            scan_config.append(cf)
+            scan_config.append(cl)
+            scan_config.append(rf)
+            scan_config.append(rl)
+
             try:
                 tdac.append(f.root.configuration_in.chip.masks.tdac[:])
             except tb.NoSuchNodeError:
@@ -58,12 +75,7 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
                 with np.errstate(all='ignore'):
                     tot = (hits["te"] - hits["le"]) & 0x7f
                 fe_masks = [(hits["col"] >= fc) & (hits["col"] <= lc) for fc, lc, _ in FRONTENDS]
-                # fe_masks.append((hits["col"] > 470) & (hits["col"] < 472) & (hits["row"] > 150) & (hits["row"] < 152))
-                #fe_masks.append(((hits["col"] == 470) & (hits["row"] == 470)) | ((hits["col"] == 150) & (hits["row"] == 150)))
-                #sel_pixel_mask = ((hits["col"] == 470) & (hits["row"] == 300))
-                # sel_pixel_mask = ((hits["col"] == 450) | (hits["col"] == 451))
-                # sel_pixel_mask = ((hits["col"] > 298) & (hits["col"] < 305) & (hits["row"] > 255) & (hits["row"] < 331))
-                sel_pixel_mask = ((hits["col"] > 287) & (hits["col"] < 295) & (hits["row"] > 287) & (hits["row"] < 295))
+                sel_pixel_mask = ((hits["col"] > SEL_PIX_MASK_COLS[0]) & (hits["col"] < SEL_PIX_MASK_COLS[1]) & (hits["row"] > SEL_PIX_MASK_ROWS[0]) & (hits["row"] < SEL_PIX_MASK_ROWS[1]))
                 single_hits_mask = is_single_hit_event(hits["timestamp"])
 
                 counts2d_tmp, counts2d_edges, _ = np.histogram2d(
@@ -117,11 +129,11 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
             plt.gca().set_axis_off()
             pdf.savefig(); plt.clf()
 
-        for input_file, c, t in zip(input_files, cfg, tdac):
+        for input_file, c, t, mk, th in zip(input_files, cfg, tdac, enable_mask, thr_map):
             draw_summary(input_file, c)
             pdf.savefig(); plt.clf()
 
-            # TDAC map
+            # TDAC map full matrix
             plt.axes((0.125, 0.11, 0.775, 0.72))
             nzc, nzr = np.nonzero(t)
             if not nzc.size:
@@ -135,11 +147,233 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
                            vmin=-0.5, vmax=7.5, cmap=TDAC_CMAP, rasterized=True)
             plt.xlabel("Column")
             plt.ylabel("Row")
-            plt.title("Map of TDAC values")
+            plt.title("Map of TDAC values (full matrix)")
             frontend_names_on_top()
             integer_ticks_colorbar().set_label("TDAC")
             pdf.savefig(); plt.clf()
-        # print("Summary")
+
+            # TDAC map enabled matrix
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            fc = scan_config[0]
+            lc = scan_config[1]
+            fr = scan_config[2]
+            lr = scan_config[3]
+
+            plt.pcolormesh(np.arange(fc, lc + 1), np.arange(fr, lr + 1),
+                           t[fc:lc, fr:lr].transpose(),
+                           vmin=-0.5, vmax=7.5, cmap=TDAC_CMAP, rasterized=True)
+            plt.xlabel("Column")
+            plt.ylabel("Row")
+            plt.title("Map of TDAC values (enabled matrix)")
+            integer_ticks_colorbar().set_label("TDAC")
+            pdf.savefig(); plt.clf()
+
+            # TDAC map different binning
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            fc = scan_config[0]
+            lc = scan_config[1]
+            fr = scan_config[2]
+            lr = scan_config[3]
+            ddx = MATRIX_DIVIDERS[0]
+            ddy = MATRIX_DIVIDERS[1]
+            m_blocks, m_blocks_masked = get_block_matrix(t[0:512, 0:512],dx = ddx,dy=ddy,mask=mk[0:512, 0:512])
+            x_ti = np.arange(0+ddx/2, t.shape[1]+ddx/2, ddx)  # X axis values
+            y_ti = np.arange(0+ddy/2, t.shape[0]+ddy/2, ddy)   # Y axis values
+
+            plt.pcolormesh(x_ti, y_ti,
+                           m_blocks_masked,
+                           vmin=-0.5, vmax=7.5, cmap=TDAC_CMAP, rasterized=True)
+            plt.xlabel("Column")
+            plt.ylabel("Row")
+            plt.title("Map of TDAC values (averaged over bin)")
+            frontend_names_on_top()
+            integer_ticks_colorbar().set_label("TDAC")
+            pdf.savefig(); plt.clf()
+            del x_ti, y_ti, m_blocks, m_blocks_masked
+
+            # TDAC full row projection
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            nzc, nzr = np.nonzero(t)
+            if not nzc.size:
+                fc, lc, fr, lr = 0, 512, 0, 512
+            else:
+                fc, lc = nzc.min(), nzc.max() + 1
+                fr, lr = nzr.min(), nzr.max() + 1
+
+            del nzc, nzr
+            t_dac_rows = [np.mean(t[:,i]) for i in range(lr)]
+            indx = [i for i in range(lr)]
+            plt.plot(indx,t_dac_rows)
+            plt.xlabel("Row")
+            plt.ylabel("Mean TDAC")
+            plt.grid()
+            plt.title("Mean of TDAC values per row")
+            pdf.savefig(); plt.clf()
+            del t_dac_rows,indx
+
+            # TDAC selected flavor row projection
+            for fc, lc, name in FRONTENDS:
+                plt.axes((0.125, 0.11, 0.775, 0.72))
+                t_dac_rows = [np.mean(t[fc:lc,i]) for i in range(lr)]
+                indx = [i for i in range(lr)]
+                plt.plot(indx,t_dac_rows)
+                plt.xlabel("Row")
+                plt.ylabel("Mean TDAC")
+                plt.grid()
+                plt.title("Mean of TDAC values per row - "+name)
+                pdf.savefig(); plt.clf()
+                del t_dac_rows,indx
+
+            # TDAC pixel block projection
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            nzc, nzr = np.nonzero(t)
+            if not nzc.size:
+                fc, lc, fr, lr = 0, 512, 0, 512
+            else:
+                fc, lc = nzc.min(), nzc.max() + 1
+                fr, lr = nzr.min(), nzr.max() + 1
+            del nzc, nzr
+
+            ddx = MATRIX_DIVIDERS[0]
+            ddy = MATRIX_DIVIDERS[1]
+
+            t_blocks,t_blocks_masked = get_block_matrix(t[0:512, 0:512],dx = ddx,dy=ddy,mask=mk[0:512, 0:512])
+            t_blocks_masked = t_blocks_masked.transpose()
+            indx_col = [i for i in range(len(t_blocks_masked))]
+            indx = [i for i in range(len(t_blocks_masked[0]))]
+            for j,p_col in enumerate(t_blocks_masked):
+                non_zero = [k for k in p_col if k != 0]
+                if len(non_zero)>0:
+                    plt.plot(indx,p_col,label=f"{ddx} cols group n.: {j}")
+
+            plt.xlabel(f"{ddy} x Row")
+            plt.ylabel("Mean TDAC")
+            plt.grid()
+            plt.title(f"Mean of TDAC values for a {ddx}x{ddy} block")
+            plt.legend(loc="best")
+            pdf.savefig(); plt.clf()
+            del indx_col,indx, t_blocks, t_blocks_masked
+
+            # ------------------------------------------
+
+            # Threshold mean value enabled matrix
+            maskd_thr = th[mk]
+            maskd_mean = np.ma.mean(maskd_thr)
+            maskd_std = np.ma.std(maskd_thr)
+            vmin = round(maskd_mean-2*maskd_std)
+            vmax = round(maskd_mean+2*maskd_std)
+
+            # Threshold map full matrix
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            nzc, nzr = np.nonzero(th)
+            if not nzc.size:
+                fc, lc, fr, lr = 0, 512, 0, 512
+            else:
+                fc, lc = nzc.min(), nzc.max() + 1
+                fr, lr = nzr.min(), nzr.max() + 1
+
+            del nzc, nzr
+            plt.pcolormesh(np.arange(fc, lc + 1), np.arange(fr, lr + 1),
+                           th[fc:lc, fr:lr].transpose(),
+                           vmin=vmin, vmax=vmax, cmap="viridis", rasterized=True)
+            plt.xlabel("Column")
+            plt.ylabel("Row")
+            plt.title("Map of THR values (all matrix)")
+            frontend_names_on_top()
+            integer_ticks_colorbar().set_label("THR")
+            pdf.savefig(); plt.clf()
+
+            # THR map enabled matrix
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            fc = scan_config[0]
+            lc = scan_config[1]
+            fr = scan_config[2]
+            lr = scan_config[3]
+
+            plt.pcolormesh(np.arange(fc, lc + 1), np.arange(fr, lr + 1),
+                           th[fc:lc, fr:lr].transpose(),
+                           vmin=vmin, vmax=vmax, cmap="viridis", rasterized=True)
+
+            plt.xlabel("Column")
+            plt.ylabel("Row")
+            plt.title("Map of THR values (enabled matrix)")
+            integer_ticks_colorbar().set_label("THR")
+            pdf.savefig(); plt.clf()
+
+            # THR map different binning
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            fc = scan_config[0]
+            lc = scan_config[1]
+            fr = scan_config[2]
+            lr = scan_config[3]
+            ddx = MATRIX_DIVIDERS[0]
+            ddy = MATRIX_DIVIDERS[1]
+            m_blocks,m_blocks_masked = get_block_matrix(th[0:512, 0:512],dx = ddx,dy=ddy,mask=mk[0:512, 0:512])
+            x_ti = np.arange(0+ddx/2, th.shape[1]+ddx/2+ddx, ddx)  # X axis values
+            y_ti = np.arange(0+ddy/2, th.shape[0]+ddy/2+ddy, ddy)   # Y axis values
+            plt.pcolormesh(x_ti, y_ti,
+                           m_blocks_masked,
+                           vmin=vmin, vmax=vmax, cmap="viridis", rasterized=True)
+            plt.xlabel("Column")
+            plt.ylabel("Row")
+            plt.title("Map of mean THR values (averaged over the bin)")
+            integer_ticks_colorbar().set_label("THR")
+            pdf.savefig(); plt.clf()
+            del x_ti,y_ti, m_blocks,m_blocks_masked
+
+            # THR full row projection
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            nzc, nzr = np.nonzero(th)
+            if not nzc.size:
+                fc, lc, fr, lr = 0, 512, 0, 512
+            else:
+                fc, lc = nzc.min(), nzc.max() + 1
+                fr, lr = nzr.min(), nzr.max() + 1
+
+            del nzc, nzr
+            thr_rows = [np.mean(th[:,i]) for i in range(lr)]
+            indx = [i for i in range(lr)]
+            plt.plot(indx,thr_rows)
+            plt.xlabel("Row")
+            plt.ylabel("Mean THR")
+            plt.grid()
+            plt.title("Mean of THR values per row")
+            pdf.savefig(); plt.clf()
+            del thr_rows,indx
+
+            # THR pixel block projection
+            plt.axes((0.125, 0.11, 0.775, 0.72))
+            nzc, nzr = np.nonzero(th)
+            if not nzc.size:
+                fc, lc, fr, lr = 0, 512, 0, 512
+            else:
+                fc, lc = nzc.min(), nzc.max() + 1
+                fr, lr = nzr.min(), nzr.max() + 1
+            del nzc, nzr
+
+            ddx = MATRIX_DIVIDERS[0]
+            ddy = MATRIX_DIVIDERS[1]
+
+            t_blocks,t_blocks_masked = get_block_matrix(th[0:512, 0:512],dx = ddx,dy=ddy,mask=mk[0:512, 0:512])
+            t_blocks_masked = t_blocks_masked.transpose()
+            indx_col = [i for i in range(len(t_blocks_masked))]
+            indx = [i for i in range(len(t_blocks_masked[0]))]
+            means = []
+            for j,p_col in enumerate(t_blocks_masked):
+                non_zero = [k for k in p_col if k != 0]
+                if len(non_zero)>0:
+                    plt.plot(indx,p_col,label=f"{ddx} cols group n.: {j}")
+                    means.append(np.mean(p_col))
+
+            plt.xlabel(f"{ddy} x Row")
+            plt.ylabel("Mean THR")
+            plt.grid()
+            plt.ylim(round(max(means)-2),round(max(means)+2))
+            plt.title(f"Mean of THR values for a {ddx}x{ddy} block")
+            plt.legend(loc="best")
+            pdf.savefig(); plt.clf()
+            del indx_col,indx, t_blocks, t_blocks_masked
+
 
         if n_total_hits == 0:
             plt.annotate("No hits recorded!", (0.5, 0.5), ha='center', va='center')
@@ -157,43 +391,31 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
         plt.xlabel("Number of hits")
         plt.ylabel("Pixels / bin")
         plt.ylim(1., max(h.max() for h in counts2d) * 10000)
-        #plt.ylim(1., 1e8)
         plt.yscale("log")
         plt.grid(which='both',axis='y')
         set_integer_ticks(plt.gca().xaxis)
-        #set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
         plt.legend()
         pdf.savefig(); plt.clf()
-        # print("Hits hist")
-
 
 
         # Histogram of ToT for selected pixels
         for (_, _, name), hist in zip(FRONTENDS, tot1d_sel_pixel):
             plt.step((tot1d_edges[1:] + tot1d_edges[:-1]) / 2,
                      hist, where='mid', label=name)
-        #print(tot1d[2])
         plt.title("ToT selected pixels")
         plt.xlabel("ToT [25 ns]")
         plt.ylabel("Hits / bin")
         plt.xlim(0, 30)
-        # plt.xlim(0, 130)
-        #plt.ylim(0, max(h[10:].max() for h in tot1d) * 1.2)
         plt.minorticks_on()
         plt.grid(which='major',axis='both')
         if log_tot:
-            # plt.ylim(0.9, max(h[10:120].max() for h in tot1d) * 1.2)
             plt.ylim(0.1, max(h.max() for h in tot1d) * 1.2)
             plt.yscale('log')
             set_integer_ticks(plt.gca().xaxis)
         else:
-            #plt.ylim(0, max(h[10:120].max() for h in tot1d) * 1.2)
             set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
         plt.legend()
         pdf.savefig(); plt.clf()
-
-
-
 
         # Histogram of ToT
         for (_, _, name), hist in zip(FRONTENDS, tot1d):
@@ -203,21 +425,16 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
         plt.xlabel("ToT [25 ns]")
         plt.ylabel("Hits / bin")
         plt.xlim(0, 30)
-        # plt.xlim(0, 130)
-        #plt.ylim(0, max(h[10:].max() for h in tot1d) * 1.2)
         plt.minorticks_on()
         plt.grid(which='major',axis='both')
         if log_tot:
-            # plt.ylim(0.9, max(h[10:120].max() for h in tot1d) * 1.2)
             plt.ylim(0.1, max(h.max() for h in tot1d) * 1.2)
             plt.yscale('log')
             set_integer_ticks(plt.gca().xaxis)
         else:
-            #plt.ylim(0, max(h[10:120].max() for h in tot1d) * 1.2)
             set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
         plt.legend()
         pdf.savefig(); plt.clf()
-        # print("ToT Hist")
 
         # Histogram of ToT (single hits)
         for (_, _, name), hist in zip(FRONTENDS, tot1d_single_hits):
@@ -235,15 +452,12 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
             set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
         plt.legend()
         pdf.savefig(); plt.clf()
-        # print("ToT Hist")
 
         # Hit map
         cmap = matplotlib.cm.get_cmap("viridis").copy()
         cmap.set_over("r")
         plt.pcolormesh(counts2d_edges, counts2d_edges, counts2d.transpose(),
                        vmin=0, vmax=300, cmap=cmap, rasterized=True)  # Necessary for quick save and view in PDF
-         #           cmap=cmap, rasterized=True, norm=LogNorm())  # Necessary for quick save and view in PDF
-                    #  cmap=cmap, rasterized=True)  # Necessary for quick save and view in PDF
         plt.title("Hit map")
         plt.xlabel("Col")
         plt.ylabel("Row")
@@ -253,7 +467,6 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
         frontend_names_on_top()
         pdf.savefig(); plt.clf()
 
-        ZOOM_STEP = 64
         for i, j in product(range(0, 512, ZOOM_STEP), range(0, 512, ZOOM_STEP)):
             i1 = min(i+ZOOM_STEP, 512)
             j1 = min(j+ZOOM_STEP, 512)
@@ -261,8 +474,6 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
                 continue
             plt.pcolormesh(counts2d_edges[i:i1+1], counts2d_edges[j:j1+1], counts2d[i:i1,j:j1].transpose(),
                            vmin=0, vmax=300, cmap=cmap, rasterized=True)  # Necessary for quick save and view in PDF
-            #              rasterized=True, norm=LogNorm())  # Necessary for quick save and view in PDF
-                                        #  rasterized=True)  # Necessary for quick save and view in PDF
             plt.title("Hit map (subregion)")
             plt.xlabel("Col")
             plt.ylabel("Row")
@@ -273,7 +484,6 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
             plt.xlim(i, i1)
             plt.ylim(j, j1)
             pdf.savefig(); plt.clf()
-        # print("Hitmap")
 
         # Map of the average ToT
         with np.errstate(all='ignore'):
@@ -308,11 +518,9 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
             plt.xlim(i, i1)
             plt.ylim(j, j1)
             pdf.savefig(); plt.clf()
-        # print("ToT map")
 
         # Noisy pixels
         if all(c.get("configuration_in.scan.run_config.scan_id") == "source_scan" for c in cfg):
-            MAX_RATE = 0.001  # Above this rate [Hz] pixels are marked noisy
             scan_time = 10
             for i, c in enumerate(cfg):
                 try:
@@ -325,7 +533,7 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
             plt.pcolormesh(counts2d_edges, counts2d_edges, 1 * mask.transpose(),
                            vmin=0, vmax=1, rasterized=True)  # Necessary for quick save and view in PDF
             plt.suptitle("Noisy pixels in yellow (ignore this plot if source was used)")
-            plt.title(f"Noisy means rate > {MAX_RATE:.3g} Hz")
+            plt.title(f"'Noisy' means rate > {MAX_RATE:.3g} Hz")
             plt.xlabel("Col")
             plt.ylabel("Row")
             set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
@@ -356,7 +564,6 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
                 plt.annotate("No noisy pixel found.", (0.5, 0.5), ha='center', va='center')
             plt.gca().set_axis_off()
             pdf.savefig(); plt.clf()
-        # print("Noisy")
 
         # Source positioning (16x16 pixels blocks histogram)
         m = np.quantile(counts2d16[counts2d16 > 0], 0.99) * 1.2 if np.any(counts2d > 0) else 1
@@ -370,7 +577,6 @@ def main(input_files, overwrite=False, log_tot=False, output_file=None):
         set_integer_ticks(plt.gca().xaxis, plt.gca().yaxis)
         frontend_names_on_top()
         pdf.savefig(); plt.clf()
-        # print("Source")
 
         # Coarse (16x16 pixel blocks) map of the average ToT
         with np.errstate(all='ignore'):
